@@ -1,0 +1,237 @@
+# Reflected XSS Protected by CSP, with CSP Bypass
+
+> **Platform:** PortSwigger Web Security Academy
+> **Category:** Cross-Site Scripting (XSS) / Content Security Policy (CSP)
+> **Difficulty:** Practitioner
+> **Status:** ✅ Solved
+
+---
+
+# Overview
+
+This lab demonstrates how a reflected Cross-Site Scripting (XSS) vulnerability can still be exploited despite the presence of a Content Security Policy (CSP).
+
+Although CSP is designed to prevent the execution of injected JavaScript, its effectiveness depends entirely on its configuration. In this lab, the application trusts an external script source that can be abused, allowing an attacker to bypass the CSP restrictions and execute arbitrary JavaScript in the victim's browser.
+
+---
+
+# Learning Objectives
+
+After completing this lab I was able to:
+
+* Identify a reflected XSS vulnerability.
+* Analyze the application's Content Security Policy.
+* Understand why the CSP configuration is insecure.
+* Bypass CSP restrictions.
+* Execute arbitrary JavaScript despite the CSP.
+
+---
+
+# Lab Information
+
+| Field          | Value                         |
+| -------------- | ----------------------------- |
+| Category       | Cross-Site Scripting (XSS)    |
+| Difficulty     | Practitioner                  |
+| Vulnerability  | Reflected XSS with CSP Bypass |
+| CWE            | CWE-79                        |
+| OWASP Top 10   | A03:2021 – Injection          |
+| Estimated CVSS | 8.2 (High)                    |
+
+---
+
+# Background
+
+Content Security Policy (CSP) is a browser security mechanism that restricts where scripts, styles, images, and other resources may be loaded from.
+
+A correctly configured CSP can significantly reduce the impact of Cross-Site Scripting attacks.
+
+However, if trusted sources are themselves vulnerable or allow execution of attacker-controlled code, the CSP can be bypassed.
+
+This lab demonstrates that CSP is only as secure as the domains it trusts.
+
+---
+
+# Reconnaissance
+
+The search functionality reflected user input directly into the HTML response.
+
+Testing with simple payloads confirmed that HTML injection was possible.
+
+The response headers included a CSP similar to:
+
+```http id="tvt2f2"
+Content-Security-Policy:
+script-src https://trusted-domain.example
+```
+
+This indicated that inline JavaScript was blocked but scripts from a trusted external source were allowed.
+
+---
+
+# Vulnerability Analysis
+
+The reflected parameter accepted attacker-controlled HTML.
+
+Although inline JavaScript was blocked by the CSP, one of the trusted external domains exposed a JSONP endpoint.
+
+Because JSONP responses execute as JavaScript, an attacker could invoke the endpoint with a malicious callback function.
+
+Since the browser considered the script to originate from a trusted domain, the CSP allowed its execution.
+
+The application therefore became vulnerable despite deploying CSP.
+
+---
+
+# Attack Flow
+
+```text
+Attacker
+    │
+    ▼
+Craft malicious URL
+    │
+    ▼
+Victim opens link
+    │
+    ▼
+Injected HTML loads trusted JSONP endpoint
+    │
+    ▼
+Browser accepts script (CSP allows it)
+    │
+    ▼
+Malicious callback executes
+    │
+    ▼
+JavaScript runs in victim's browser
+```
+
+---
+
+# Proof of Concept
+
+Example payload:
+
+```html
+<script src="https://trusted-domain.example/jsonp?callback=alert"></script>
+```
+
+In the lab, the payload used the trusted JSONP endpoint provided by the allowed domain to execute attacker-controlled JavaScript.
+
+---
+
+# Exploitation Steps
+
+1. Locate the reflected XSS parameter.
+2. Confirm that HTML injection is possible.
+3. Inspect the response headers.
+4. Identify the CSP policy.
+5. Enumerate trusted external script sources.
+6. Discover a JSONP endpoint on one of the trusted domains.
+7. Build a payload using the JSONP callback parameter.
+8. Deliver the exploit.
+9. Trigger JavaScript execution despite the CSP.
+
+---
+
+# Root Cause
+
+The application relies on a Content Security Policy but implicitly trusts an external domain capable of executing attacker-controlled JavaScript.
+
+Instead of preventing script execution, the CSP allows the browser to load JavaScript from a source that exposes a JSONP endpoint.
+
+Because JSONP returns executable JavaScript, the policy is effectively bypassed.
+
+---
+
+# Impact
+
+A successful attacker could:
+
+* Execute arbitrary JavaScript.
+* Steal session information.
+* Perform actions on behalf of authenticated users.
+* Modify page content.
+* Capture sensitive information.
+* Escalate reflected XSS into account compromise.
+
+---
+
+# Mitigations
+
+Recommended mitigations include:
+
+* Avoid trusting third-party domains unless absolutely necessary.
+* Remove support for JSONP.
+* Use modern APIs such as CORS instead of JSONP.
+* Restrict `script-src` to self-hosted resources.
+* Implement CSP nonces or hashes.
+* Properly encode all reflected user input.
+
+---
+
+# Lessons Learned
+
+* CSP is not a substitute for proper output encoding.
+* Trusting vulnerable third-party domains weakens CSP.
+* JSONP remains a common CSP bypass technique.
+* CSP should complement secure coding practices, not replace them.
+
+---
+
+# References
+
+* PortSwigger Web Security Academy – CSP Bypass
+* OWASP Cross Site Scripting Prevention Cheat Sheet
+* OWASP Content Security Policy Cheat Sheet
+* CWE-79 – Improper Neutralization of Input During Web Page Generation
+
+---
+
+# Classification
+
+## CWE
+
+* CWE-79 – Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')
+
+## OWASP Top 10
+
+* A03:2021 – Injection
+
+---
+
+# Skills Practiced
+
+* Burp Suite Proxy
+* Burp Repeater
+* XSS Testing
+* CSP Analysis
+* JSONP Abuse
+* Browser Security
+* Payload Development
+
+---
+
+# Tools Used
+
+* Burp Suite Community Edition
+* Firefox
+* PortSwigger Exploit Server
+* Browser Developer Tools
+
+---
+
+# Key Takeaways
+
+* CSP significantly increases security only when configured correctly.
+* Trusting third-party script sources introduces additional attack surface.
+* JSONP endpoints can completely bypass restrictive CSP policies.
+* Output encoding remains the primary defense against reflected XSS.
+* Defense in depth is essential: CSP should reinforce, not replace, secure input handling.
+
+---
+
+# Result
+
+✅ Successfully bypassed the application's Content Security Policy by abusing a trusted JSONP endpoint, demonstrating how an incorrectly configured CSP can fail to prevent reflected Cross-Site Scripting attacks.
