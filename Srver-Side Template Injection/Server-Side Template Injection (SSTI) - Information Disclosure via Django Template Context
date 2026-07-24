@@ -1,0 +1,237 @@
+# Server-Side Template Injection (SSTI) - Information Disclosure via Django Template Context
+
+## Lab Information
+
+- **Lab:** Server-side template injection in a Django template
+- **Category:** Server-Side Template Injection (SSTI)
+- **Difficulty:** Apprentice
+- **Platform:** PortSwigger Web Security Academy
+
+---
+
+# Summary
+
+This lab demonstrates how a Server-Side Template Injection (SSTI) vulnerability in the Django template engine can expose sensitive application data without requiring remote code execution.
+
+By abusing the built-in `{% debug %}` template tag, it is possible to enumerate all variables available within the template context. Among these objects is the `settings` object, which contains the application's `SECRET_KEY`.
+
+Disclosure of Django's `SECRET_KEY` can have severe security implications because it is used for signing sessions, CSRF tokens, password reset tokens, and other security-sensitive functionality.
+
+---
+
+# Objective
+
+Retrieve the application's Django `SECRET_KEY` and submit it to solve the lab.
+
+---
+
+# Background
+
+Django templates intentionally restrict arbitrary Python execution, making Remote Code Execution (RCE) considerably more difficult than in other template engines.
+
+However, if an attacker can inject template syntax, they may still abuse built-in tags and exposed objects to disclose sensitive information.
+
+One particularly useful built-in is:
+
+```django
+{% debug %}
+```
+
+This tag prints every variable available within the template rendering context.
+
+---
+
+# Exploitation Steps
+
+## 1. Log in
+
+Authenticate using the provided credentials.
+
+```
+Username: wiener
+Password: peter
+```
+
+Navigate to:
+
+```
+My Account → Product Templates
+```
+
+---
+
+## 2. Identify the Template Engine
+
+Replace one of the existing template expressions with an invalid payload:
+
+```text
+${{<%[%'"}}%\
+```
+
+Save the template.
+
+The resulting error page identifies **Django** as the underlying template engine.
+
+---
+
+## 3. Enumerate the Template Context
+
+Remove the invalid payload and replace it with:
+
+```django
+{% debug %}
+```
+
+Save the template.
+
+The application now renders every object available within the template context.
+
+Example:
+
+```
+request
+user
+messages
+settings
+...
+```
+
+The most interesting object is:
+
+```
+settings
+```
+
+---
+
+## 4. Read the SECRET_KEY
+
+Replace the debug statement with:
+
+```django
+{{settings.SECRET_KEY}}
+```
+
+Save the template again.
+
+The page now renders the Django secret key.
+
+Example:
+
+```
+8kg!l8af#3m@d7w...
+```
+
+---
+
+## 5. Submit the Solution
+
+Copy the displayed value.
+
+Click:
+
+```
+Submit Solution
+```
+
+Paste the retrieved `SECRET_KEY`.
+
+The lab is successfully solved.
+
+---
+
+# Why This Works
+
+The vulnerable application renders user-controlled input directly inside a Django template.
+
+Although Django templates prevent arbitrary Python execution, they still expose internal objects through the rendering context.
+
+The `{% debug %}` tag reveals every available variable, including the global `settings` object.
+
+Since Django templates allow attribute access, the attacker can simply evaluate:
+
+```django
+{{settings.SECRET_KEY}}
+```
+
+to disclose one of the application's most sensitive configuration values.
+
+---
+
+# Impact
+
+Disclosure of Django's `SECRET_KEY` can compromise multiple security mechanisms, including:
+
+- Forging signed session cookies
+- Forging password reset tokens
+- Forging CSRF tokens
+- Forging signed URLs
+- Manipulating cryptographically signed application data
+- Facilitating privilege escalation depending on application design
+
+Although this lab only demonstrates information disclosure, exposure of the secret key could ultimately lead to complete application compromise.
+
+---
+
+# Payloads Used
+
+### Identify the template engine
+
+```text
+${{<%[%'"}}%\
+```
+
+### Enumerate available variables
+
+```django
+{% debug %}
+```
+
+### Read the Django secret key
+
+```django
+{{settings.SECRET_KEY}}
+```
+
+---
+
+# Root Cause
+
+The application allows user-controlled template code to be rendered by the Django template engine.
+
+Additionally, sensitive objects such as `settings` are exposed to the template context, allowing attackers to access confidential configuration values.
+
+---
+
+# Remediation
+
+- Never render user-controlled template code.
+- Avoid exposing template editors to untrusted users.
+- Enable strict template sandboxing where available.
+- Remove unnecessary objects from the template context.
+- Disable debugging functionality in production.
+- Prevent sensitive configuration objects from being accessible within templates.
+
+---
+
+# CWE Mapping
+
+- **CWE-1336** – Improper Neutralization of Special Elements Used in a Template Engine
+- **CWE-200** – Exposure of Sensitive Information to an Unauthorized Actor
+
+---
+
+# References
+
+- PortSwigger Web Security Academy – Server-Side Template Injection
+- Django Template Language Documentation
+- Django Built-in Template Tags
+- Django Settings Documentation
+
+---
+
+# Conclusion
+
+This lab demonstrates that Server-Side Template Injection does not always require Remote Code Execution to be dangerous. Even within the relatively restricted Django template engine, attackers can leverage built-in functionality to enumerate internal objects and disclose highly sensitive configuration data such as the application's `SECRET_KEY`.
+
+Compromise of this key can undermine multiple authentication and integrity mechanisms, potentially enabling attackers to forge signed data, hijack user sessions, or escalate their privileges within the application.
