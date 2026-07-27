@@ -1,0 +1,345 @@
+# Insecure Direct Object Reference (IDOR) on Chat Transcript Files
+
+**Lab:** Insecure Direct Object Reference (IDOR) on chat transcripts  
+**Category:** Broken Access Control / IDOR  
+**Difficulty:** Apprentice  
+**Platform:** PortSwigger Web Security Academy
+
+---
+
+# Executive Summary
+
+The application provides users with the ability to download customer support chat transcripts. These transcripts are stored as sequentially numbered text files that can be accessed directly.
+
+Due to the absence of authorization checks, an attacker can access chat transcripts belonging to other users. In this laboratory, a transcript contains credentials that can be used to authenticate as another user, demonstrating the impact of insecure direct object references on static resources.
+
+---
+
+# Vulnerability Classification
+
+| Attribute | Value |
+|-----------|-------|
+| Vulnerability | Insecure Direct Object Reference (IDOR) |
+| CWE | CWE-639 – Authorization Bypass Through User-Controlled Key |
+| OWASP Top 10 | A01:2021 – Broken Access Control |
+| OWASP API Security | API1:2023 – Broken Object Level Authorization (BOLA) |
+| Severity | High |
+| CVSS v3.1 | 8.6 (High) |
+
+---
+
+# Target
+
+**Application:** PortSwigger Web Security Academy Lab
+
+**Affected Resource**
+
+```http
+GET /chat
+```
+
+Response:
+
+```http
+Content-Disposition: attachment; filename="1.txt"
+```
+
+---
+
+# Objective
+
+Obtain another user's credentials from a chat transcript and authenticate using the recovered password.
+
+---
+
+# Methodology
+
+1. Open the Live Chat feature.
+2. Send a message.
+3. Download the generated transcript.
+4. Inspect the downloaded transcript.
+5. Recover the disclosed credentials.
+6. Authenticate as the affected user.
+
+---
+
+# Vulnerability Discovery
+
+The application includes a feature that allows users to download customer support conversations.
+
+After selecting **View transcript**, the server returns a downloadable text file.
+
+HTTP response:
+
+```http
+HTTP/2 200 OK
+Content-Type: text/plain; charset=utf-8
+Content-Disposition: attachment; filename="1.txt"
+```
+
+The filename indicates that transcripts are stored as individual text files.
+
+---
+
+# Evidence
+
+The downloaded transcript contained the following conversation:
+
+```text
+CONNECTED: -- Now chatting with Hal Pline --
+
+You: Hi Hal, I think I've forgotten my password and need confirmation that I've got the right one
+
+Hal Pline: Sure, no problem, you seem like a nice guy. Just tell me your password and I'll confirm whether it's correct or not.
+
+You: Ok so my password is a653s8ywrl5brxq8nvzd. Is that right?
+
+Hal Pline: Yes it is!
+```
+
+---
+
+# Sensitive Information Disclosure
+
+The transcript exposed user credentials in clear text.
+
+Recovered password:
+
+```text
+a653s8ywrl5brxq8nvzd
+```
+
+This information should never be stored or exposed within downloadable chat transcripts.
+
+---
+
+# Exploitation
+
+Using the recovered password, authentication was performed with the affected user's account.
+
+```text
+Username: carlos
+Password: a653s8ywrl5brxq8nvzd
+```
+
+Authentication succeeded, completing the laboratory.
+
+---
+
+# Technical Analysis
+
+The application stores chat conversations as downloadable text files.
+
+Conceptually, the implementation behaves similarly to:
+
+```php
+return readfile("/transcripts/" . $filename);
+```
+
+The server returns transcript files without verifying ownership.
+
+As a result, users may access transcripts that belong to other users.
+
+Additionally, support personnel confirmed the user's password during the conversation, exposing sensitive credentials.
+
+---
+
+# Root Cause
+
+The vulnerability results from two independent security failures:
+
+- Missing authorization controls on transcript downloads.
+- Storage and disclosure of sensitive credentials within support conversations.
+
+Together, these flaws allow attackers to recover valid credentials belonging to other users.
+
+---
+
+# Impact
+
+An attacker can:
+
+- Access private customer support conversations.
+- Recover sensitive information.
+- Obtain user credentials.
+- Authenticate as another user.
+- Compromise additional accounts.
+
+Depending on transcript contents, further compromise of the application may be possible.
+
+---
+
+# HTTP Evidence
+
+## Transcript Download
+
+```http
+GET /chat HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+---
+
+## Server Response
+
+```http
+HTTP/2 200 OK
+Content-Type: text/plain
+Content-Disposition: attachment; filename="1.txt"
+```
+
+---
+
+## Transcript Contents
+
+```text
+You: Ok so my password is a653s8ywrl5brxq8nvzd.
+
+Hal Pline:
+Yes it is!
+```
+
+---
+
+## Authentication
+
+```text
+Username: carlos
+Password: a653s8ywrl5brxq8nvzd
+```
+
+---
+
+# Attack Flow
+
+```text
+Attacker opens Live Chat
+          │
+          ▼
+Downloads transcript
+          │
+          ▼
+Reads transcript contents
+          │
+          ▼
+Password disclosed in conversation
+          │
+          ▼
+Authenticate as victim
+          │
+          ▼
+Account compromised
+```
+
+---
+
+# Root Cause Diagram
+
+```text
+User requests transcript
+          │
+          ▼
+Server returns transcript file
+          │
+          ▼
+❌ No access control validation
+          │
+          ▼
+Sensitive conversation exposed
+          │
+          ▼
+Credentials disclosed
+```
+
+---
+
+# Security Recommendations
+
+## Enforce Authorization
+
+Every transcript download must verify that the requesting user owns the requested conversation.
+
+Example:
+
+```text
+if (transcript.owner != authenticatedUser)
+    return HTTP 403 Forbidden;
+```
+
+---
+
+## Never Store Passwords in Conversations
+
+Support personnel should never request or confirm user passwords.
+
+Instead:
+
+- Reset passwords.
+- Use secure identity verification procedures.
+- Avoid handling credentials in plain text.
+
+---
+
+## Encrypt Sensitive Information
+
+If conversations contain confidential data, transcripts should be encrypted at rest and protected through strict access controls.
+
+---
+
+## Use Random Resource Identifiers
+
+Avoid predictable filenames such as:
+
+```text
+1.txt
+2.txt
+3.txt
+```
+
+Instead, use cryptographically secure random identifiers:
+
+```text
+8b6a51b8-33ef-4cf7-a72b-acde239b3d91.txt
+```
+
+---
+
+## Audit Download Endpoints
+
+Regularly test download functionality for:
+
+- IDOR
+- Broken Access Control
+- Information Disclosure
+- Forced Browsing
+
+---
+
+# References
+
+- OWASP Top 10 2021 – A01: Broken Access Control
+- OWASP API Security Top 10 – API1:2023 Broken Object Level Authorization
+- CWE-639 – Authorization Bypass Through User-Controlled Key
+- PortSwigger Web Security Academy – Access Control Vulnerabilities
+
+---
+
+# Conclusion
+
+The application was vulnerable to an **Insecure Direct Object Reference (IDOR)** affecting downloadable chat transcripts.
+
+Due to missing authorization checks, an attacker could obtain a transcript containing credentials in plain text. Those credentials were then used to authenticate successfully as another user, demonstrating how seemingly low-risk information disclosure vulnerabilities can lead directly to account compromise.
+
+---
+
+## Key Takeaways
+
+- Every downloadable resource must be protected by server-side authorization.
+- Customer support systems must never expose or confirm user passwords.
+- Sensitive information should never be stored in downloadable transcripts.
+- Predictable resource identifiers increase the likelihood of unauthorized access.
+- Broken Access Control remains one of the most critical web application vulnerabilities.
+
+---
+
+**Lab Status:** ✅ Solved
