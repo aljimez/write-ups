@@ -1,0 +1,281 @@
+# Information Disclosure: Authentication Bypass via Client-Controlled Cookie
+
+**Lab:** Information disclosure on debug page / Client-controlled authorization cookie  
+**Category:** Information Disclosure / Broken Access Control  
+**Difficulty:** Apprentice  
+**Platform:** PortSwigger Web Security Academy
+
+---
+
+# Executive Summary
+
+The application implemented authorization using a client-controlled cookie (`Admin`). During the authentication process, the server returned the cookie `Admin=false`. By intercepting the HTTP response with Burp Suite and modifying the cookie to `Admin=true` before it reached the browser, it was possible to gain unauthorized access to the administrative interface.
+
+The vulnerability exists because the application trusts a value stored on the client to determine authorization privileges instead of validating user roles on the server.
+
+---
+
+# Vulnerability Classification
+
+| Attribute | Value |
+|-----------|-------|
+| Vulnerability | Client-Controlled Authorization |
+| CWE | CWE-602 - Client-Side Enforcement of Server-Side Security |
+| OWASP Top 10 | A01:2021 – Broken Access Control |
+| Severity | High |
+| CVSS v3.1 | 8.8 (High) |
+
+---
+
+# Target
+
+**Application:** PortSwigger Web Security Academy Lab
+
+**Affected Endpoint:**
+
+```
+/admin
+```
+
+---
+
+# Objective
+
+Obtain administrative privileges by modifying the authorization cookie and delete the user **carlos**.
+
+---
+
+# Methodology
+
+1. Attempt to access the administration panel.
+2. Observe that access is denied.
+3. Intercept the authentication process using Burp Suite.
+4. Modify the server response before it reaches the browser.
+5. Change the authorization cookie.
+6. Access the administration panel.
+7. Delete the target user.
+
+---
+
+# Reconnaissance
+
+Attempting to browse directly to:
+
+```http
+GET /admin HTTP/2
+```
+
+returned an authorization error:
+
+```
+Admin interface only available if logged in as an administrator
+```
+
+This indicated that an additional authorization mechanism was protecting the endpoint.
+
+---
+
+# Authentication Process Analysis
+
+During login, Burp Suite intercepted the server response containing the following cookie:
+
+```http
+HTTP/2 302 Found
+
+Set-Cookie: Admin=false
+```
+
+This revealed that administrative privileges were determined using a cookie entirely controlled by the client.
+
+---
+
+# Exploitation
+
+The intercepted response was modified before forwarding it to the browser.
+
+Original:
+
+```http
+Set-Cookie: Admin=false
+```
+
+Modified:
+
+```http
+Set-Cookie: Admin=true
+```
+
+After forwarding the modified response, the browser stored the manipulated cookie.
+
+Subsequent requests contained:
+
+```http
+Cookie: session=<SESSION_ID>; Admin=true
+```
+
+---
+
+# Verification
+
+Browsing again to:
+
+```http
+GET /admin HTTP/2
+```
+
+returned the administrative interface instead of the authorization error.
+
+The panel displayed:
+
+```
+Users
+
+wiener   Delete
+carlos   Delete
+```
+
+Deleting the user **carlos** successfully completed the laboratory.
+
+---
+
+# Root Cause
+
+The application relied on a client-controlled cookie to determine authorization level.
+
+Because cookies are fully modifiable by the client, an attacker can change their value without possessing administrative privileges.
+
+Authorization decisions must always be performed using trusted server-side data.
+
+---
+
+# Impact
+
+An attacker can:
+
+- Bypass authorization controls.
+- Access restricted administrative functionality.
+- Delete users.
+- Modify sensitive data.
+- Potentially compromise the entire application.
+
+If additional administrative functions existed, the attacker could likely perform them as well.
+
+---
+
+# Evidence
+
+## Initial Authorization Failure
+
+```http
+GET /admin
+```
+
+Response:
+
+```
+Admin interface only available if logged in as an administrator
+```
+
+---
+
+## Original Cookie
+
+```http
+Set-Cookie: Admin=false
+```
+
+---
+
+## Modified Cookie
+
+```http
+Set-Cookie: Admin=true
+```
+
+---
+
+## Authenticated Request
+
+```http
+Cookie: session=<SESSION_ID>; Admin=true
+```
+
+---
+
+## Successful Administrative Access
+
+```
+Users
+
+wiener
+carlos
+```
+
+---
+
+# Security Recommendations
+
+## Critical
+
+Never trust authorization information stored on the client.
+
+---
+
+## Server-Side Authorization
+
+Store user roles within the server-side session or database.
+
+Example:
+
+```
+Session ID
+        │
+        ▼
+Server Session
+        │
+        ▼
+role = administrator
+```
+
+---
+
+## Signed Tokens
+
+If authorization data is stored in cookies or JWTs:
+
+- Digitally sign the token.
+- Verify the signature on every request.
+- Reject any modified values.
+
+---
+
+## Principle of Least Privilege
+
+Every privileged endpoint should independently verify:
+
+- Authentication
+- Authorization
+- User role
+
+Never rely solely on client-supplied values.
+
+---
+
+# References
+
+- OWASP Top 10 2021 – A01: Broken Access Control
+- CWE-602 – Client-Side Enforcement of Server-Side Security
+- PortSwigger Web Security Academy – Information Disclosure Labs
+
+---
+
+# Conclusion
+
+The application trusted a client-controlled cookie (`Admin`) to determine authorization privileges.
+
+By intercepting the authentication response and changing the cookie value from `false` to `true`, administrative access was obtained without possessing valid administrator credentials.
+
+This demonstrates why authorization must always be enforced on the server, as any client-side security control can be manipulated by an attacker.
+
+---
+**Lab Status:** ✅ Solved
