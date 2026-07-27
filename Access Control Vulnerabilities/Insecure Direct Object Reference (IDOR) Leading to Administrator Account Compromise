@@ -1,0 +1,401 @@
+# Insecure Direct Object Reference (IDOR) Leading to Administrator Account Compromise
+
+**Lab:** User ID controlled by request parameter exposing administrator credentials  
+**Category:** Broken Access Control / IDOR  
+**Difficulty:** Apprentice  
+**Platform:** PortSwigger Web Security Academy
+
+---
+
+# Executive Summary
+
+The application allows authenticated users to retrieve account information based solely on the value of the `id` parameter. Due to missing authorization checks, an attacker can request the profile of any user, including the administrator.
+
+More critically, the application exposes the administrator's password within the account information. By retrieving these credentials, an attacker can authenticate as the administrator, access the administrative interface, and perform privileged actions such as deleting arbitrary users.
+
+---
+
+# Vulnerability Classification
+
+| Attribute | Value |
+|-----------|-------|
+| Vulnerability | Insecure Direct Object Reference (IDOR) |
+| CWE | CWE-639 – Authorization Bypass Through User-Controlled Key |
+| OWASP Top 10 | A01:2021 – Broken Access Control |
+| OWASP API Security | API1:2023 – Broken Object Level Authorization (BOLA) |
+| Severity | Critical |
+| CVSS v3.1 | 9.8 (Critical) |
+
+---
+
+# Target
+
+**Application:** PortSwigger Web Security Academy Lab
+
+**Affected Endpoint**
+
+```http
+GET /my-account?id=<username>
+```
+
+---
+
+# Objective
+
+Obtain the administrator's password by exploiting an IDOR vulnerability, authenticate as the administrator, and delete the user **carlos**.
+
+---
+
+# Methodology
+
+1. Authenticate as a standard user.
+2. Access the account page.
+3. Intercept the account request.
+4. Modify the `id` parameter.
+5. Retrieve the administrator's account information.
+6. Extract the administrator's password.
+7. Authenticate as the administrator.
+8. Access the administration panel.
+9. Delete the target user.
+
+---
+
+# Initial Request
+
+After authentication, the application loads the current user's account.
+
+```http
+GET /my-account?id=wiener HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: session=<SESSION>
+```
+
+---
+
+# Vulnerability Discovery
+
+The endpoint uses the value supplied in the `id` parameter to determine which account to retrieve.
+
+The application does **not** verify whether the authenticated user is authorized to access the requested account.
+
+---
+
+# Exploitation
+
+The intercepted request was sent to Burp Repeater.
+
+Original request:
+
+```http
+GET /my-account?id=wiener HTTP/2
+```
+
+Modified request:
+
+```http
+GET /my-account?id=administrator HTTP/2
+```
+
+The modified request was then sent to the server.
+
+---
+
+# Successful Exploitation
+
+The application returned the administrator's account page.
+
+The response contained sensitive information, including the administrator's password.
+
+Example:
+
+```html
+Username: administrator
+
+Email: administrator@example.com
+
+Password: <ADMIN_PASSWORD>
+```
+
+The disclosed password was copied for later authentication.
+
+---
+
+# Privilege Escalation
+
+Using the recovered credentials, authentication was performed as the administrator.
+
+```text
+Username: administrator
+Password: <ADMIN_PASSWORD>
+```
+
+Authentication was successful.
+
+---
+
+# Administrative Access
+
+After logging in as the administrator, the administration panel became accessible.
+
+```http
+GET /admin HTTP/2
+```
+
+The interface displayed all registered users.
+
+The user **carlos** was deleted, successfully completing the laboratory.
+
+---
+
+# Technical Analysis
+
+The vulnerable application trusts the user-controlled identifier supplied in the URL.
+
+Conceptually, the implementation behaves similarly to:
+
+```java
+String username = request.getParameter("id");
+
+User user = database.findUser(username);
+
+return user;
+```
+
+The server never verifies whether:
+
+```text
+Authenticated User == Requested User
+```
+
+As a result, any authenticated user can access another user's private information simply by changing the identifier.
+
+---
+
+# Root Cause
+
+The application performs object lookup directly from client-controlled input without enforcing authorization.
+
+Additionally, highly sensitive information (the user's password) is exposed in the account response.
+
+Two independent security failures are therefore present:
+
+- Broken Access Control (IDOR)
+- Sensitive Information Exposure
+
+---
+
+# Impact
+
+An attacker can:
+
+- Access any user's private account.
+- Obtain confidential user information.
+- Recover administrator credentials.
+- Authenticate as an administrator.
+- Gain complete administrative control.
+- Delete or modify arbitrary users.
+- Potentially compromise the entire application.
+
+---
+
+# Evidence
+
+## Original Request
+
+```http
+GET /my-account?id=wiener HTTP/2
+```
+
+---
+
+## Modified Request
+
+```http
+GET /my-account?id=administrator HTTP/2
+```
+
+---
+
+## Sensitive Response
+
+```html
+Username: administrator
+
+Password: <ADMIN_PASSWORD>
+```
+
+---
+
+## Administrator Login
+
+```text
+Username: administrator
+Password: <ADMIN_PASSWORD>
+```
+
+---
+
+## Administrative Interface
+
+```http
+GET /admin HTTP/2
+```
+
+---
+
+## Final Action
+
+The user **carlos** was successfully deleted.
+
+---
+
+# Attack Flow
+
+```text
+Attacker logs in as Wiener
+          │
+          ▼
+GET /my-account?id=wiener
+          │
+          ▼
+Modify parameter
+          │
+          ▼
+GET /my-account?id=administrator
+          │
+          ▼
+Server retrieves administrator account
+          │
+          ▼
+❌ No authorization check
+          │
+          ▼
+Administrator password disclosed
+          │
+          ▼
+Login as administrator
+          │
+          ▼
+Access /admin
+          │
+          ▼
+Delete carlos
+```
+
+---
+
+# Root Cause Diagram
+
+```text
+Client
+   │
+   ▼
+GET /my-account?id=administrator
+   │
+   ▼
+Application
+   │
+   ▼
+Find user by supplied ID
+   │
+   ▼
+❌ No authorization validation
+   │
+   ▼
+Administrator profile returned
+```
+
+---
+
+# Security Recommendations
+
+## Enforce Object-Level Authorization
+
+Before returning any user object, verify that the authenticated user is authorized to access it.
+
+Example:
+
+```text
+if (requestedUser != authenticatedUser)
+    return HTTP 403 Forbidden;
+```
+
+---
+
+## Never Expose Passwords
+
+Passwords must never be retrievable.
+
+Instead:
+
+- Store only password hashes.
+- Never include password fields in API responses.
+- Never render passwords in account pages.
+
+---
+
+## Use Server-Side Identity
+
+For endpoints that return the authenticated user's profile, ignore client-supplied identifiers.
+
+Instead of:
+
+```http
+GET /my-account?id=administrator
+```
+
+Use the authenticated session:
+
+```text
+Authenticated User
+        │
+        ▼
+Return own profile
+```
+
+---
+
+## Apply the Principle of Least Privilege
+
+Administrative functionality should require explicit authorization checks on every request.
+
+---
+
+## Perform Security Testing
+
+Include automated tests for:
+
+- IDOR
+- Broken Access Control
+- Sensitive Data Exposure
+- Authorization bypass
+
+---
+
+# References
+
+- OWASP Top 10 2021 – A01: Broken Access Control
+- OWASP API Security Top 10 – API1:2023 Broken Object Level Authorization
+- CWE-639 – Authorization Bypass Through User-Controlled Key
+- PortSwigger Web Security Academy – Access Control Vulnerabilities
+
+---
+
+# Conclusion
+
+The application was vulnerable to an **Insecure Direct Object Reference (IDOR)** that allowed authenticated users to retrieve arbitrary account information by modifying the `id` parameter.
+
+The impact was significantly increased because the administrator's password was exposed within the account response. This enabled full privilege escalation without exploiting authentication mechanisms, ultimately allowing unrestricted administrative access and complete compromise of the application's user management functionality.
+
+---
+
+## Key Takeaways
+
+- Never trust client-supplied object identifiers.
+- Always enforce authorization checks at the object level.
+- Passwords must never be exposed after registration.
+- Sensitive operations must rely exclusively on server-side identity validation.
+
+---
+
+**Lab Status:** ✅ Solved
