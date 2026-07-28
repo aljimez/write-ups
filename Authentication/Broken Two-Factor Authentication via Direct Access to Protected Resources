@@ -1,0 +1,333 @@
+# Broken Two-Factor Authentication via Direct Access to Protected Resources
+
+**Lab:** 2FA Broken Logic - Authentication Bypass  
+**Category:** Authentication Vulnerabilities  
+**Difficulty:** Apprentice  
+**Platform:** PortSwigger Web Security Academy
+
+---
+
+# Executive Summary
+
+The application implements a two-factor authentication (2FA) mechanism; however, it fails to enforce completion of the second authentication step before granting access to protected resources.
+
+After successfully validating the username and password, the server creates an authenticated session before the second factor is verified. As a result, an attacker who knows valid credentials can directly request authenticated endpoints and completely bypass the 2FA process.
+
+This vulnerability completely defeats the purpose of two-factor authentication.
+
+---
+
+# Vulnerability Classification
+
+| Attribute | Value |
+|-----------|-------|
+| Vulnerability | Two-Factor Authentication Bypass |
+| CWE | CWE-287 – Improper Authentication |
+| CWE | CWE-306 – Missing Authentication for Critical Function |
+| OWASP Top 10 | A07:2021 – Identification and Authentication Failures |
+| Severity | High |
+| CVSS v3.1 | 8.1 (High) |
+
+---
+
+# Objective
+
+Access the victim's account without completing the second authentication factor.
+
+---
+
+# Methodology
+
+1. Authenticate with a legitimate account.
+2. Complete the 2FA process.
+3. Identify the protected account page.
+4. Log out.
+5. Authenticate using the victim's credentials.
+6. Stop before entering the verification code.
+7. Manually browse to the protected account page.
+8. Confirm unauthorized access.
+
+---
+
+# Initial Enumeration
+
+A legitimate login was performed using the attacker's account.
+
+The application required a verification code sent via email before allowing access.
+
+Once the verification code was entered, the authenticated account page became accessible:
+
+```text
+/my-account
+```
+
+This endpoint was noted for later use.
+
+---
+
+# Exploitation
+
+The attacker logged out and authenticated using the victim's credentials supplied by the laboratory.
+
+After submitting the username and password, the application redirected to the 2FA verification page.
+
+Instead of entering the verification code, the browser URL was manually changed to:
+
+```text
+/my-account
+```
+
+The application granted direct access to the victim's account without validating the second authentication factor.
+
+The laboratory was successfully solved.
+
+---
+
+# Technical Analysis
+
+The intended authentication flow should be:
+
+```text
+Username + Password
+        │
+        ▼
+Second Factor Required
+        │
+        ▼
+Verification Code Valid?
+        │
+     No │ Yes
+        │
+        ▼
+Access Denied
+        │
+        ▼
+Authenticated Session
+        │
+        ▼
+Protected Resources
+```
+
+Instead, the application behaved as follows:
+
+```text
+Username + Password
+        │
+        ▼
+Authenticated Session Created
+        │
+        ▼
+2FA Challenge Displayed
+        │
+        ▼
+User Requests /my-account
+        │
+        ▼
+Access Granted
+```
+
+The server validated only the first authentication factor when processing requests to protected resources.
+
+No verification was performed to ensure that the second factor had been completed.
+
+---
+
+# Root Cause
+
+The server establishes an authenticated session immediately after validating the username and password.
+
+Protected endpoints only verify that a valid session exists, without checking whether the user has successfully completed the second authentication step.
+
+---
+
+# Impact
+
+An attacker who knows valid credentials can:
+
+- Completely bypass two-factor authentication.
+- Access protected user accounts.
+- Perform authenticated actions.
+- Read or modify sensitive information.
+- Completely defeat the additional security provided by 2FA.
+
+---
+
+# HTTP Evidence
+
+## Initial Login
+
+```http
+POST /login HTTP/2
+
+username=carlos
+password=<victim_password>
+```
+
+The application redirected to the 2FA verification page.
+
+---
+
+## Expected Flow
+
+```text
+/login2
+        │
+        ▼
+Enter verification code
+        │
+        ▼
+Access /my-account
+```
+
+---
+
+## Exploit
+
+Without submitting the verification code, the browser was manually directed to:
+
+```http
+GET /my-account HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: session=<authenticated_session>
+```
+
+The server returned the victim's account page instead of redirecting back to the verification step.
+
+---
+
+# Attack Flow
+
+```text
+Victim Credentials
+        │
+        ▼
+Username + Password Accepted
+        │
+        ▼
+2FA Challenge
+        │
+        ├──────────────┐
+        │              │
+        ▼              ▼
+Enter Code      Request /my-account
+        │              │
+        ▼              ▼
+Authenticated     Access Granted
+Session           (2FA Bypassed)
+```
+
+---
+
+# Root Cause Diagram
+
+```text
+Incoming Request
+       │
+       ▼
+Valid Session?
+       │
+      Yes
+       │
+       ▼
+Access Granted
+       │
+       ▼
+❌ No verification of 2FA completion
+```
+
+---
+
+# Security Recommendations
+
+## Delay Session Activation
+
+The application should not create a fully authenticated session until the second authentication factor has been successfully validated.
+
+---
+
+## Verify 2FA Status on Every Protected Endpoint
+
+Protected resources should verify both:
+
+- The user is authenticated.
+- The second authentication factor has been completed.
+
+Example:
+
+```php
+if (!isAuthenticated()) {
+    redirect("/login");
+}
+
+if (!session()->get("2fa_completed")) {
+    redirect("/login2");
+}
+```
+
+---
+
+## Separate Authentication States
+
+Maintain distinct session states such as:
+
+- Anonymous
+- Password Authenticated
+- Fully Authenticated (2FA Complete)
+
+Only the final state should be allowed to access sensitive functionality.
+
+---
+
+## Protect All Sensitive Endpoints
+
+Endpoints such as:
+
+- `/my-account`
+- `/admin`
+- `/api/*`
+- `/settings`
+
+must verify full authentication, including successful 2FA completion.
+
+---
+
+## Perform Authentication Flow Testing
+
+Security assessments should validate:
+
+- Direct URL access.
+- Forced browsing.
+- Session manipulation.
+- Navigation before completing MFA.
+- State transition logic.
+
+---
+
+# References
+
+- OWASP Top 10 2021 – A07: Identification and Authentication Failures
+- CWE-287 – Improper Authentication
+- CWE-306 – Missing Authentication for Critical Function
+- PortSwigger Web Security Academy – Broken Authentication Labs
+
+---
+
+# Conclusion
+
+The application was vulnerable to a **Broken Two-Factor Authentication** flaw because it granted access to protected resources after validating only the username and password.
+
+Although the user interface required a verification code, the server failed to enforce completion of the second authentication factor before authorizing access. By directly requesting the account page, an attacker could fully bypass the 2FA mechanism and access another user's account.
+
+---
+
+## Key Takeaways
+
+- Two-factor authentication must be enforced server-side, not only through the user interface.
+- Creating a fully authenticated session before completing 2FA defeats the purpose of multi-factor authentication.
+- Every protected endpoint must verify that the authentication process has been fully completed.
+- Forced browsing is an effective technique for identifying broken authentication workflows.
+- Improper implementation of 2FA can completely negate the additional security it is intended to provide.
+
+---
+
+**Lab Status:** ✅ Solved
