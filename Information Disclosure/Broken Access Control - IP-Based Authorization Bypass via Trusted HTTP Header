@@ -1,0 +1,274 @@
+# Broken Access Control - IP-Based Authorization Bypass via Trusted HTTP Header
+
+## Executive Summary
+
+A broken access control vulnerability was identified in the application's administrative interface.
+
+Access to the `/admin` endpoint is intended to be restricted to authenticated administrators or requests originating from the localhost interface. However, the application determines the client's IP address by trusting the value of the `X-Custom-IP-Authorization` HTTP header.
+
+Because this header can be supplied by the client, an attacker can spoof the value `127.0.0.1` and bypass the IP-based authorization mechanism, gaining unauthorized access to the administrative panel.
+
+This vulnerability ultimately allows an unauthenticated attacker to perform privileged administrative actions.
+
+---
+
+# Vulnerability Classification
+
+| Property         | Value                                       |
+| ---------------- | ------------------------------------------- |
+| Category         | Broken Access Control                       |
+| Weakness         | Trusting Client-Supplied HTTP Headers       |
+| CWE              | CWE-290 - Authentication Bypass by Spoofing |
+| Related Weakness | CWE-284 - Improper Access Control           |
+| Technology       | HTTP                                        |
+| Impact           | Administrative Access Bypass                |
+| Severity         | High                                        |
+
+---
+
+# Summary
+
+The application protects the administrative interface by allowing access only to authenticated administrators or requests originating from the localhost address.
+
+Instead of determining the client IP from the network connection or trusted reverse proxy configuration, the application relies on the client-controlled HTTP header:
+
+```http
+X-Custom-IP-Authorization
+```
+
+Because attackers can freely modify request headers, they can spoof the value:
+
+```text
+127.0.0.1
+```
+
+As a result, the application incorrectly believes that the request originated from the local machine and grants administrative privileges.
+
+---
+
+# Affected Component
+
+```http
+GET /admin
+```
+
+Authorization Header:
+
+```http
+X-Custom-IP-Authorization
+```
+
+---
+
+# Vulnerability Details
+
+The application performs authorization based on the value contained in the `X-Custom-IP-Authorization` request header.
+
+During testing, the HTTP `TRACE` method revealed that this header is automatically added during request processing and contains the client's IP address.
+
+Because the server trusts the header without validating its origin, an attacker can manually supply an arbitrary IP address.
+
+By replacing the header value with:
+
+```text
+127.0.0.1
+```
+
+the application grants access to resources intended exclusively for localhost.
+
+---
+
+# Proof of Concept
+
+## Step 1
+
+Attempt to access the administrative interface.
+
+```http
+GET /admin HTTP/2
+```
+
+The application denies access because the request is not authenticated and does not originate from localhost.
+
+---
+
+## Step 2
+
+Send the same request using the HTTP `TRACE` method.
+
+```http
+TRACE /admin HTTP/2
+```
+
+Inspect the response.
+
+The echoed request reveals the following header:
+
+```http
+X-Custom-IP-Authorization: <client-ip>
+```
+
+This indicates that the application relies on this header when determining whether a request originates from localhost.
+
+---
+
+## Step 3
+
+Configure Burp Suite to automatically append the following header to every request:
+
+```http
+X-Custom-IP-Authorization: 127.0.0.1
+```
+
+---
+
+## Step 4
+
+Request the administrative interface again.
+
+```http
+GET /admin HTTP/2
+X-Custom-IP-Authorization: 127.0.0.1
+```
+
+The application now grants administrative access.
+
+---
+
+## Step 5
+
+Access the administration panel.
+
+Delete the user:
+
+```text
+carlos
+```
+
+The lab is successfully completed.
+
+---
+
+# Why the Exploit Works
+
+The application incorrectly assumes that the value contained within `X-Custom-IP-Authorization` accurately represents the client's source IP address.
+
+Since HTTP request headers are fully controlled by the client unless explicitly rewritten by trusted infrastructure, attackers can spoof arbitrary values.
+
+By supplying the localhost address (`127.0.0.1`), the authorization logic incorrectly concludes that the request originated from the local server and grants administrative privileges.
+
+---
+
+# Root Cause
+
+The vulnerability exists because:
+
+* authorization decisions rely on a client-controlled HTTP header;
+* the application does not validate whether the header originated from trusted infrastructure;
+* localhost is treated as a trusted security boundary;
+* client input is used directly for access control decisions.
+
+---
+
+# Impact
+
+An attacker may:
+
+* bypass IP-based access restrictions;
+* gain unauthorized access to administrative functionality;
+* perform privileged administrative actions;
+* delete user accounts;
+* modify application data;
+* potentially compromise the entire application depending on available administrative functionality.
+
+---
+
+# Remediation
+
+## Never Trust Client-Supplied Headers
+
+Security decisions should never rely on request headers that can be modified by the client.
+
+---
+
+## Determine the Client IP Securely
+
+The client IP should be obtained from the network connection or from trusted reverse proxy headers only after verifying that the request originated from trusted infrastructure.
+
+---
+
+## Restrict Administrative Interfaces
+
+Administrative endpoints should require strong authentication and role-based authorization regardless of client IP address.
+
+---
+
+## Validate Proxy Headers
+
+Headers such as:
+
+* `X-Forwarded-For`
+* `X-Real-IP`
+* `Forwarded`
+* custom IP headers
+
+should only be processed when inserted by trusted reverse proxies.
+
+---
+
+## Apply Defense in Depth
+
+Administrative interfaces should be protected through multiple security controls, including:
+
+* authentication;
+* authorization;
+* network segmentation;
+* logging and monitoring.
+
+---
+
+# Attack Flow
+
+```text
+           Request /admin
+                 │
+                 ▼
+     Access denied to attacker
+                 │
+                 ▼
+ TRACE reveals trusted HTTP header
+                 │
+                 ▼
+X-Custom-IP-Authorization discovered
+                 │
+                 ▼
+ Attacker spoofs header value
+
+      127.0.0.1
+
+                 │
+                 ▼
+ Application trusts header
+                 │
+                 ▼
+ Authorization bypass
+                 │
+                 ▼
+ Administrative panel accessible
+                 │
+                 ▼
+      Delete user "carlos"
+                 │
+                 ▼
+      Lab successfully completed
+```
+
+---
+
+# Key Takeaways
+
+* Client-controlled HTTP headers must never be trusted for authorization decisions.
+* IP-based access controls should rely only on trusted network information.
+* Administrative functionality should always require proper authentication and authorization.
+* The HTTP `TRACE` method can reveal useful information about how requests are processed internally and should generally be disabled unless explicitly required.
+* Trusting spoofable headers can completely undermine otherwise well-designed access control mechanisms.
