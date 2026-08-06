@@ -1,0 +1,242 @@
+# Information Disclosure - Framework Version Disclosure via Unhandled Exception
+
+## Executive Summary
+
+An information disclosure vulnerability was identified in the product retrieval functionality of the application. The `productId` parameter is not properly validated before being processed, allowing an attacker to trigger an unhandled exception by supplying an unexpected data type.
+
+Instead of returning a generic error page, the application exposes a full Java stack trace, revealing internal implementation details, including the exact version of the web framework in use: **Apache Struts 2 2.3.31**.
+
+Although this issue does not directly compromise confidentiality, integrity, or availability, it significantly aids attackers during the reconnaissance phase by exposing valuable information that can be used to identify publicly known vulnerabilities affecting the disclosed framework version.
+
+---
+
+# Vulnerability Classification
+
+| Property            | Value                                                                  |
+| ------------------- | ---------------------------------------------------------------------- |
+| Category            | Information Disclosure                                                 |
+| Weakness            | Verbose Error Messages                                                 |
+| CWE                 | CWE-209 - Generation of Error Message Containing Sensitive Information |
+| Related Weakness    | CWE-200 - Exposure of Sensitive Information to an Unauthorized Actor   |
+| Affected Technology | Apache Struts 2                                                        |
+| Impact              | Framework Version Disclosure                                           |
+| Severity            | Low                                                                    |
+
+---
+
+# Summary
+
+The application expects the `productId` parameter to contain an integer representing the identifier of a product.
+
+By supplying a value of an unexpected data type, the application throws an unhandled exception and returns a complete Java stack trace to the client.
+
+The stack trace exposes implementation details that should remain internal, including package names, class names, execution flow, and the exact framework version:
+
+```
+Apache Struts 2 2.3.31
+```
+
+This information could assist an attacker in identifying known vulnerabilities affecting the deployed framework.
+
+---
+
+# Affected Component
+
+```
+GET /product
+```
+
+Parameter:
+
+```
+productId
+```
+
+---
+
+# Vulnerability Details
+
+The application does not properly validate user-supplied input before processing it.
+
+When a value of an unexpected type is provided for the `productId` parameter, the server raises an exception.
+
+Instead of handling the exception securely, the application returns a detailed stack trace containing internal implementation details.
+
+This behavior allows an attacker to fingerprint the application's technology stack without authentication or privileged access.
+
+---
+
+# Proof of Concept
+
+## Step 1
+
+Navigate to any product page.
+
+Example request:
+
+```http
+GET /product?productId=1 HTTP/2
+Host: LAB-ID.web-security-academy.net
+```
+
+---
+
+## Step 2
+
+Capture the request using Burp Suite.
+
+Send the request to **Repeater**.
+
+---
+
+## Step 3
+
+Modify the `productId` parameter so that it contains a string instead of an integer.
+
+Original request:
+
+```http
+GET /product?productId=1 HTTP/2
+```
+
+Modified request:
+
+```http
+GET /product?productId="example" HTTP/2
+```
+
+---
+
+## Step 4
+
+Send the modified request.
+
+The server returns an unhandled exception together with a complete Java stack trace.
+
+---
+
+## Step 5
+
+Inspect the response.
+
+Among the exposed information, the stack trace reveals:
+
+```
+Apache Struts 2 2.3.31
+```
+
+This confirms the framework version running on the target application.
+
+---
+
+# Why the Vulnerability Exists
+
+The application assumes that the `productId` parameter will always contain a valid integer.
+
+When an unexpected value is received, an exception is generated during request processing.
+
+Instead of catching the exception and returning a generic error page, the application exposes the full stack trace to the client, disclosing internal implementation details.
+
+---
+
+# Root Cause
+
+The vulnerability exists because:
+
+* input validation is insufficient;
+* exceptions are not handled securely;
+* debug information is exposed in production;
+* detailed stack traces are returned to users.
+
+---
+
+# Impact
+
+Although this issue does not directly allow code execution or unauthorized access, it provides valuable reconnaissance information that can be leveraged during later stages of an attack.
+
+An attacker can:
+
+* identify the underlying web framework;
+* determine the exact framework version;
+* search for publicly known vulnerabilities affecting that version;
+* fingerprint the application stack;
+* reduce the effort required to identify suitable exploits.
+
+---
+
+# Remediation
+
+## Validate User Input
+
+Ensure that parameters such as `productId` are validated before processing and reject unexpected data types.
+
+---
+
+## Disable Detailed Error Messages
+
+Applications deployed in production should never expose stack traces or debugging information to end users.
+
+Instead, return generic error responses such as:
+
+```http
+HTTP/1.1 500 Internal Server Error
+
+An unexpected error occurred.
+```
+
+---
+
+## Log Exceptions Internally
+
+Detailed exception information should be written to server-side logs rather than returned in HTTP responses.
+
+---
+
+## Disable Debug Mode
+
+Ensure that production deployments have debugging features disabled and that framework-specific development settings are not enabled.
+
+---
+
+## Keep Frameworks Updated
+
+Regularly update Apache Struts and all third-party components to supported versions in order to reduce exposure to publicly disclosed vulnerabilities.
+
+---
+
+# Attack Flow
+
+```text
+            User Request
+                 │
+                 ▼
+GET /product?productId="example"
+                 │
+                 ▼
+ Application attempts to process input
+                 │
+                 ▼
+ Invalid data type triggers exception
+                 │
+                 ▼
+ Exception is not handled
+                 │
+                 ▼
+ Full Java stack trace returned
+                 │
+                 ▼
+ Framework identified
+                 │
+                 ▼
+ Apache Struts 2 2.3.31 disclosed
+```
+
+---
+
+# Key Takeaways
+
+* Verbose error messages should never be exposed in production environments.
+* Stack traces provide attackers with valuable reconnaissance information.
+* Framework version disclosure can significantly simplify vulnerability research.
+* Proper input validation and centralized exception handling reduce unnecessary information leakage.
+* Production systems should return generic error responses while logging detailed exceptions internally.
