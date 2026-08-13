@@ -1,0 +1,36 @@
+# OAuth Authentication Bypass via Flawed Implementation
+
+## Overview
+
+This lab demonstrates an authentication bypass caused by an insecure OAuth implementation.
+
+The application exposes an `/authenticate` endpoint that receives information about the authenticated OAuth user together with an OAuth access token.
+
+The application fails to properly associate the supplied user identity with the identity represented by the access token.
+
+By modifying the `email` parameter while keeping a valid OAuth access token, it is possible to authenticate as another user.
+
+The vulnerability can ultimately be used to access Carlos's account.
+
+---
+
+## Vulnerability
+
+**Vulnerability:** OAuth authentication bypass / improper account binding
+
+**Affected endpoint:** `/authenticate`
+
+**Attack vector:** Manipulation of OAuth user information
+
+**Impact:** Account takeover
+
+---
+
+## 1. Analyze the OAuth Flow
+
+First, I accessed the application and clicked **My account** to initiate the OAuth login process.
+
+The OAuth flow contained several requests, beginning with an authorization request similar to:
+
+```http
+GET /auth?client_id=...
