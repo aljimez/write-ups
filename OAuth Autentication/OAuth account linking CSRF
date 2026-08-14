@@ -1,0 +1,39 @@
+# OAuth account linking CSRF
+
+## Lab
+
+**PortSwigger Web Security Academy**
+
+**Vulnerability:** OAuth account linking CSRF
+
+**Impact:** Account takeover / unauthorized social-account linking
+
+---
+
+## Description
+
+The application allows users to link their social media account to an existing blog account through OAuth.
+
+The OAuth account-linking flow does not use a `state` parameter to prevent Cross-Site Request Forgery (CSRF).
+
+As a result, an attacker can initiate an OAuth linking flow using their own social media account, intercept the resulting authorization code, and construct a malicious page that causes another user's browser to send the code to the vulnerable `/oauth-linking` endpoint.
+
+If the victim is logged in as an administrator when the malicious page is visited, the attacker's social media account becomes linked to the administrator's blog account.
+
+The attacker can then log in using the application's **"Log in with social media"** functionality and gain access to the victim's account.
+
+---
+
+## Vulnerability identification
+
+After logging into my own account, I selected:
+
+> **Attach a social profile**
+
+Burp Suite was used to inspect the OAuth flow.
+
+The authorization request contained:
+
+```http
+GET /auth?client_id=ifawc5eya54zjxhe0b2m7&redirect_uri=https://0a7b002f04d182c980f4b25e00f900c4.web-security-academy.net/oauth-linking&response_type=code&scope=openid%20profile%20email HTTP/2
+Host: oauth-0a7e0067048582a1807cb04302350080.oauth-server.net
