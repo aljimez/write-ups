@@ -1,0 +1,449 @@
+# Time-Based Blind SQL Injection
+
+**Lab:** Blind SQL injection with time delays
+**Category:** SQL Injection
+**Difficulty:** Practitioner
+**Platform:** PortSwigger Web Security Academy
+
+---
+
+# Executive Summary
+
+The application was vulnerable to a **Time-Based Blind SQL Injection** through the `TrackingId` cookie.
+
+The application used the cookie for analytics and incorporated its value into a SQL query without proper parameterization.
+
+Unlike visible SQL injection vulnerabilities, the application did not directly return the results of the injected query or expose a useful database error. However, it was possible to inject the PostgreSQL `pg_sleep()` function and deliberately delay the database response.
+
+By injecting a ten-second delay, it was possible to confirm that arbitrary SQL expressions were being executed by the backend.
+
+The laboratory was successfully solved by injecting:
+
+```text
+x'||pg_sleep(10)--
+```
+
+and observing that the application took approximately ten seconds longer to respond.
+
+---
+
+# Vulnerability Classification
+
+| Attribute     | Value                                                                       |
+| ------------- | --------------------------------------------------------------------------- |
+| Vulnerability | Time-Based Blind SQL Injection                                              |
+| CWE           | CWE-89 – Improper Neutralization of Special Elements used in an SQL Command |
+| OWASP Top 10  | A03:2021 – Injection                                                        |
+| Severity      | High                                                                        |
+| CVSS v3.1     | 8.8 (High)                                                                  |
+
+> The exact CVSS score depends on the privileges available to the vulnerable database connection and the potential impact in a real application.
+
+---
+
+# Target
+
+**Application:** PortSwigger Web Security Academy
+
+**Injection Point:**
+
+```http
+Cookie: TrackingId=...
+```
+
+**Database:** PostgreSQL
+
+---
+
+# Objective
+
+Identify and exploit the blind SQL injection vulnerability by introducing a measurable delay in the application's response.
+
+The objective was to demonstrate that SQL commands supplied through the `TrackingId` cookie were executed by the backend.
+
+---
+
+# Methodology
+
+1. Access the application's front page.
+2. Intercept a request containing the `TrackingId` cookie.
+3. Send the request to Burp Repeater.
+4. Inject a PostgreSQL `pg_sleep()` function.
+5. Measure the application's response time.
+6. Confirm the time-based blind SQL injection.
+
+---
+
+# Initial Enumeration
+
+The application's front page generated an HTTP request containing a tracking cookie similar to:
+
+```http id="t0zmxu"
+GET / HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: TrackingId=XXXXXXXX; session=XXXXXXXX
+```
+
+The `TrackingId` value was selected as the potential injection point.
+
+---
+
+# SQL Injection Payload
+
+The original value of the cookie was replaced with:
+
+```text id="k84i0a"
+TrackingId=x'||pg_sleep(10)--
+```
+
+The complete cookie header was therefore similar to:
+
+```http id="p76y0f"
+Cookie: TrackingId=x'||pg_sleep(10)--; session=XXXXXXXX
+```
+
+The request was sent through Burp Repeater.
+
+---
+
+# Observed Behavior
+
+Under normal circumstances, the application responded almost immediately.
+
+After injecting:
+
+```sql id="zj0d5r"
+pg_sleep(10)
+```
+
+the response was delayed by approximately ten seconds.
+
+This demonstrated that the PostgreSQL database was executing the injected SQL expression.
+
+The observed behavior can be summarized as:
+
+| Request                | Expected response time |
+| ---------------------- | ---------------------: |
+| Normal `TrackingId`    |        Normal response |
+| `pg_sleep(10)` payload |            ~10 seconds |
+
+The delay was therefore used as the information channel.
+
+---
+
+# Technical Analysis
+
+The payload was:
+
+```text id="u8m5dc"
+x'||pg_sleep(10)--
+```
+
+The payload can be broken down into three components.
+
+### 1. Closing the original string
+
+```text id="7p9h9n"
+x'
+```
+
+The quotation mark attempts to terminate the string containing the original `TrackingId` value.
+
+---
+
+### 2. Executing `pg_sleep()`
+
+```sql id="s0y0ps"
+pg_sleep(10)
+```
+
+`pg_sleep()` is a PostgreSQL function that suspends execution for the specified number of seconds.
+
+In this case:
+
+```sql id="7nhx5w"
+pg_sleep(10)
+```
+
+causes the database session to wait approximately ten seconds.
+
+---
+
+### 3. Commenting out the remaining query
+
+```text id="am7vxm"
+--
+```
+
+The SQL comment sequence causes the remainder of the original SQL statement to be ignored.
+
+The conceptual structure therefore becomes:
+
+```text id="0x7qjw"
+Original SQL
+      │
+      ▼
+TrackingId = 'x'
+               │
+               ├── injected expression
+               │
+               ▼
+          pg_sleep(10)
+               │
+               ▼
+          -- remaining SQL
+```
+
+---
+
+# Why This Is a Blind SQL Injection
+
+In a conventional SQL injection vulnerability, the attacker may be able to observe:
+
+* Query results.
+* Database records.
+* Error messages.
+
+In this case, none of those channels were required.
+
+Instead, the attacker observes:
+
+```text id="k8j5x8"
+Response time
+```
+
+The database becomes a timing oracle.
+
+For example:
+
+```text id="xj6w0n"
+Condition false → normal response
+Condition true  → delayed response
+```
+
+An attacker could theoretically extend this technique to retrieve sensitive information one bit or character at a time.
+
+For example, a conceptual payload could test a condition and sleep only if it is true:
+
+```sql id="ew3g0m"
+CASE WHEN <condition> THEN pg_sleep(10) ELSE pg_sleep(0) END
+```
+
+The response time would then reveal whether `<condition>` evaluated to true or false.
+
+---
+
+# Attack Flow
+
+```text id="5y1j0s"
+Attacker
+    │
+    ▼
+TrackingId cookie
+    │
+    ▼
+SQL Injection
+    │
+    ▼
+PostgreSQL
+    │
+    ▼
+pg_sleep(10)
+    │
+    ▼
+Database execution delayed
+    │
+    ▼
+HTTP response delayed
+    │
+    ▼
+Attacker observes timing difference
+```
+
+---
+
+# HTTP Evidence
+
+## Original Request
+
+```http id="r7cx5w"
+GET / HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: TrackingId=XXXXXXXX; session=XXXXXXXX
+```
+
+---
+
+## Malicious Request
+
+```http id="b4k7h2"
+GET / HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: TrackingId=x'||pg_sleep(10)--; session=XXXXXXXX
+```
+
+---
+
+## Result
+
+The application took approximately ten seconds longer to respond.
+
+The observed delay confirmed that:
+
+```sql id="2yl1on"
+pg_sleep(10)
+```
+
+was being executed by the database.
+
+---
+
+# Root Cause
+
+The root cause was the use of a user-controlled cookie value inside a SQL query without parameterization.
+
+Conceptually, the application behaved similarly to:
+
+```sql id="1bq4j5"
+SELECT ...
+FROM ...
+WHERE tracking_id = '<TrackingId>';
+```
+
+Because the value was concatenated directly into the SQL statement, an attacker could inject additional SQL syntax.
+
+The absence of parameterized queries allowed the attacker to execute database functions such as:
+
+```sql id="7f8q6s"
+pg_sleep()
+```
+
+---
+
+# Impact
+
+A time-based blind SQL injection can potentially allow an attacker to:
+
+* Confirm the presence of SQL injection.
+* Identify database behavior.
+* Infer database contents.
+* Extract sensitive information character by character.
+* Determine whether specific records exist.
+* Potentially compromise user credentials.
+* Modify or delete data if the database account has sufficient privileges.
+
+The impact can therefore be significant even though the application does not display SQL results.
+
+---
+
+# Security Recommendations
+
+## Use Parameterized Queries
+
+The primary mitigation is to use prepared statements or parameterized queries.
+
+Conceptually:
+
+```sql id="11whu7"
+SELECT ...
+FROM ...
+WHERE tracking_id = $1;
+```
+
+The `TrackingId` value must be passed as data rather than concatenated into the SQL statement.
+
+---
+
+## Apply Least Privilege
+
+The application's database account should have only the permissions required for the application's legitimate functionality.
+
+This limits the impact of a successful SQL injection.
+
+---
+
+## Validate and Normalize Input
+
+Where appropriate, analytics identifiers should conform to a strict expected format.
+
+For example, if a tracking identifier is expected to contain only specific characters, unexpected SQL metacharacters can be rejected.
+
+Input validation should be considered a defense-in-depth measure and must not replace parameterized queries.
+
+---
+
+## Monitor Abnormal Response Times
+
+Security monitoring can identify repeated requests containing suspicious SQL syntax combined with unusual response delays.
+
+Patterns involving functions such as:
+
+```text
+pg_sleep
+sleep
+WAITFOR
+BENCHMARK
+```
+
+may indicate attempted time-based SQL injection.
+
+Detection should complement, not replace, secure SQL query construction.
+
+---
+
+## Avoid Database-Specific Function Exposure
+
+Applications should ensure that user-controlled input cannot influence the execution of database functions.
+
+The use of parameterized queries prevents this class of injection.
+
+---
+
+# Comparison With Other Blind SQL Injection Techniques
+
+| Technique                | Information channel             |
+| ------------------------ | ------------------------------- |
+| Boolean-based blind SQLi | Different application responses |
+| Error-based SQLi         | Database error messages         |
+| Time-based blind SQLi    | Response timing                 |
+| Visible SQLi             | Direct query results            |
+
+This lab demonstrates the third technique.
+
+The key difference is that **the attacker does not need the application to return any database information**. The timing of the response itself provides the required information.
+
+---
+
+# Conclusion
+
+The application was vulnerable to **Time-Based Blind SQL Injection** through the `TrackingId` cookie.
+
+By injecting:
+
+```text id="i9w5lo"
+x'||pg_sleep(10)--
+```
+
+the SQL string was terminated, the PostgreSQL `pg_sleep()` function was executed, and the remainder of the original query was commented out.
+
+The resulting ten-second delay in the HTTP response demonstrated that the injected SQL was being executed by the backend database.
+
+This vulnerability could potentially be extended beyond simple detection to extract sensitive information through conditional timing attacks.
+
+The vulnerability could be prevented primarily through **parameterized SQL queries**, combined with least-privilege database accounts and appropriate security monitoring.
+
+---
+
+# Key Takeaways
+
+* Blind SQL injection does not require visible database output.
+* Response timing can act as an information channel.
+* PostgreSQL's `pg_sleep()` can be used to demonstrate time-based SQL injection.
+* SQL comments can be used to neutralize the remainder of the original query.
+* A timing difference can be used to infer the result of SQL conditions.
+* Time-based SQL injection can potentially extract sensitive data character by character.
+* Parameterized queries are the primary defense against SQL injection.
+
+---
+
+**Lab Status:** ✅ Solved
