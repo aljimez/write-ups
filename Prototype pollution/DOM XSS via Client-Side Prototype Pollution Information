@@ -1,0 +1,456 @@
+PortSwigger Web Security Academy
+DOM XSS via Client-Side Prototype Pollution
+Information
+Category: Prototype Pollution / DOM XSS
+Difficulty: Practitioner
+Status: ✅ Solved
+Author: Alejandro Jiménez
+Objective
+
+Exploit a client-side prototype pollution vulnerability to achieve DOM-based Cross-Site Scripting (XSS).
+
+The objective was to:
+
+Identify a source capable of modifying Object.prototype.
+Identify a JavaScript gadget that uses a property inherited from the prototype.
+Control the value of the gadget through prototype pollution.
+Reach a DOM XSS sink.
+Execute arbitrary JavaScript using alert(1).
+Technologies Involved
+JavaScript
+Prototype pollution
+Object.prototype
+DOM-based XSS
+Query-string parameter parsing
+Dynamic <script> creation
+script.src
+Burp Suite
+Browser DevTools
+DOM Invader
+Reconnaissance
+1. Identifying the Prototype Pollution Source
+
+The application processes parameters supplied through the URL query string.
+
+The following payload was used:
+
+/?__proto__[foo]=bar
+
+After loading the URL, the browser DevTools Console was opened and:
+
+Object.prototype
+
+was executed.
+
+The resulting object contained the injected property:
+
+foo: "bar"
+
+This confirmed that attacker-controlled input could modify the global Object.prototype.
+
+Therefore, a prototype pollution source had been identified.
+
+Prototype Pollution Source
+
+The vulnerable parameter was:
+
+__proto__
+
+The following payload:
+
+/?__proto__[foo]=bar
+
+resulted conceptually in:
+
+Object.prototype.foo = "bar";
+
+The attack flow was:
+
+Attacker-controlled URL
+        │
+        ▼
+__proto__[foo]=bar
+        │
+        ▼
+Query-string parser
+        │
+        ▼
+Object.prototype
+        │
+        ▼
+foo = "bar"
+Identifying the Gadget
+
+The JavaScript files loaded by the application were inspected using the browser's Sources panel.
+
+The relevant functionality was located in:
+
+searchLogger.js
+
+The application contained logic equivalent to:
+
+if(config.transport_url) {
+    let script = document.createElement('script');
+    script.src = config.transport_url;
+    document.body.appendChild(script);
+}
+
+The important property was:
+
+transport_url
+
+The application did not explicitly define this property on the config object.
+
+However, JavaScript property lookup also searches the object's prototype chain.
+
+Therefore, if an attacker could inject:
+
+Object.prototype.transport_url
+
+the application could access the malicious value through:
+
+config.transport_url
+
+This made transport_url a viable prototype pollution gadget.
+
+Testing the Gadget
+
+The prototype pollution source was combined with the identified gadget.
+
+The following payload was submitted:
+
+/?__proto__[transport_url]=foo
+
+The DOM was then inspected using the Elements panel.
+
+A dynamically generated script element was observed:
+
+<script src="foo"></script>
+
+This confirmed that the attacker-controlled prototype property reached the DOM XSS sink.
+
+Exploitation
+
+The arbitrary value was replaced with a data: URL containing JavaScript:
+
+/?__proto__[transport_url]=data:,alert(1);
+
+The prototype pollution effectively caused:
+
+Object.prototype.transport_url = "data:,alert(1);";
+
+Because config inherited from Object.prototype, the following property lookup:
+
+config.transport_url
+
+returned the attacker-controlled value.
+
+The application then executed:
+
+let script = document.createElement('script');
+script.src = config.transport_url;
+document.body.appendChild(script);
+
+This resulted in a DOM element equivalent to:
+
+<script src="data:,alert(1);"></script>
+
+The browser executed the JavaScript contained in the data: URL:
+
+alert(1);
+
+The laboratory was successfully solved.
+
+Complete Exploitation Chain
+Attacker-controlled query string
+              │
+              ▼
+__proto__[transport_url]
+              │
+              ▼
+      Object.prototype
+              │
+              ▼
+Object.prototype.transport_url
+              │
+              ▼
+     config.transport_url
+              │
+              ▼
+   document.createElement()
+              │
+              ▼
+       script.src = ...
+              │
+              ▼
+     data:,alert(1);
+              │
+              ▼
+       JavaScript execution
+              │
+              ▼
+           alert(1)
+Technical Analysis
+
+The vulnerability exists because JavaScript does not restrict property lookup to an object's own properties.
+
+Consider:
+
+let config = {};
+
+If the application evaluates:
+
+config.transport_url
+
+JavaScript first searches for transport_url directly on config.
+
+If it is not present, JavaScript continues through the prototype chain.
+
+Therefore, after:
+
+Object.prototype.transport_url = "data:,alert(1);";
+
+the following becomes true:
+
+config.transport_url
+
+even though transport_url was never explicitly assigned to config.
+
+The application then uses this inherited property in a dangerous DOM sink:
+
+script.src = config.transport_url;
+
+This turns prototype pollution into DOM XSS.
+
+Root Cause
+
+The vulnerability is caused by the combination of two weaknesses.
+
+1. Unsafe Prototype Manipulation
+
+The query-string parser allows attacker-controlled parameters to modify:
+
+Object.prototype
+
+through:
+
+__proto__
+2. Unsafe Use of Inherited Properties
+
+The application trusts:
+
+config.transport_url
+
+without checking whether the property belongs directly to the config object.
+
+As a result, a property injected into Object.prototype can influence application behavior.
+
+3. Dangerous DOM Sink
+
+The polluted property is eventually used as:
+
+script.src = config.transport_url;
+
+This allows an attacker-controlled value to reach a script-loading sink.
+
+Security Impact
+
+Successful exploitation allows arbitrary JavaScript execution in the context of the vulnerable application.
+
+Depending on the application's functionality and security controls, this could allow an attacker to:
+
+Manipulate the DOM.
+Perform actions as the victim.
+Access information available to JavaScript.
+Perform authenticated requests.
+Steal sensitive information accessible to the page.
+Chain the vulnerability with other client-side vulnerabilities.
+Security Recommendations
+Prevent Prototype Pollution
+
+User-controlled input should never be allowed to modify:
+
+__proto__
+constructor
+prototype
+
+Application-specific parsing logic should explicitly reject these properties.
+
+Use Safe Query-String Parsers
+
+Query-string parsers should be configured or implemented so that special prototype-related properties cannot modify global prototypes.
+
+Validate Own Properties
+
+Before using potentially sensitive properties, verify that the property belongs directly to the object.
+
+For example:
+
+Object.hasOwn(config, 'transport_url')
+
+is preferable to relying solely on:
+
+if(config.transport_url)
+Avoid Dynamic Script Injection
+
+Applications should avoid assigning attacker-controlled values to:
+
+script.src
+
+If dynamic script loading is required, use a strict allowlist of trusted script origins.
+
+Implement Content Security Policy
+
+A restrictive CSP can provide an additional layer of protection against client-side script injection.
+
+For example:
+
+Content-Security-Policy: script-src 'self'
+
+The policy should be adapted to the application's legitimate requirements.
+
+DOM Invader Approach
+
+The same vulnerability can be identified using DOM Invader.
+
+The general methodology is:
+
+Open the lab in Burp's built-in browser.
+Enable DOM Invader.
+Enable the prototype pollution option.
+Reload the application.
+Open the DOM Invader panel.
+Identify the prototype pollution source.
+Select Scan for gadgets.
+Allow DOM Invader to analyze the application.
+Identify the script.src sink.
+Observe that the transport_url property controls the sink.
+Use Exploit to generate the proof of concept.
+Verify that alert(1) executes.
+Evidence
+Prototype Pollution
+
+Payload:
+
+/?__proto__[foo]=bar
+
+Verification:
+
+Object.prototype
+
+Result:
+
+foo: "bar"
+Gadget Discovery
+
+Payload:
+
+/?__proto__[transport_url]=foo
+
+Result:
+
+<script src="foo"></script>
+
+This demonstrated that the polluted property reached the script source.
+
+Final Exploit
+
+Payload:
+
+/?__proto__[transport_url]=data:,alert(1);
+
+Result:
+
+alert(1)
+
+The execution of the JavaScript confirmed successful exploitation.
+
+Attack Diagram
+                       Attacker
+                          │
+                          ▼
+              __proto__[transport_url]
+                          │
+                          ▼
+                 Query-string parser
+                          │
+                          ▼
+                  Object.prototype
+                          │
+                          ▼
+             transport_url = data URL
+                          │
+                          ▼
+                  config.transport_url
+                          │
+                          ▼
+              document.createElement()
+                          │
+                          ▼
+                 <script src="...">
+                          │
+                          ▼
+                  JavaScript execution
+                          │
+                          ▼
+                       alert(1)
+Vulnerability Classification
+CWE
+CWE-1321 – Improperly Controlled Modification of Object Prototype Attributes ('Prototype Pollution')
+CWE-79 – Improper Neutralization of Input During Web Page Generation (Cross-site Scripting)
+OWASP Top 10 2021
+A03 – Injection
+A05 – Security Misconfiguration
+
+The primary vulnerability is client-side prototype pollution, which is subsequently chained into DOM-based XSS.
+
+Key Takeaways
+Client-side prototype pollution can originate from URL query parameters.
+__proto__ should be treated as a dangerous property when processing user-controlled input.
+JavaScript automatically searches the prototype chain when resolving properties.
+Inherited properties can therefore influence application behavior.
+Prototype pollution becomes significantly more dangerous when a suitable gadget exists.
+Dynamic assignment to script.src can provide a powerful DOM XSS sink.
+Object.hasOwn() can prevent applications from unintentionally trusting inherited properties.
+DOM Invader can automate the discovery of prototype pollution sources and gadgets.
+Conclusion
+
+The application was vulnerable to DOM XSS via client-side prototype pollution.
+
+An attacker could inject:
+
+__proto__[transport_url]
+
+through the URL query string and modify the global:
+
+Object.prototype
+
+The polluted property was subsequently inherited by the application's config object and accessed through:
+
+config.transport_url
+
+The application then assigned the attacker-controlled value to:
+
+script.src
+
+By supplying:
+
+data:,alert(1);
+
+the attacker was able to execute arbitrary JavaScript in the context of the application.
+
+The complete exploitation chain was:
+
+Prototype Pollution
+        ↓
+Object.prototype.transport_url
+        ↓
+Inherited Property
+        ↓
+transport_url Gadget
+        ↓
+script.src
+        ↓
+DOM XSS
+        ↓
+JavaScript Execution
