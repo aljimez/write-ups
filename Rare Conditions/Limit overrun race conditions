@@ -1,0 +1,169 @@
+# PortSwigger Web Security Academy — Predicting a potential collision
+
+**Vulnerability:** Race condition  
+**Category:** Business logic vulnerability / Time-of-check to time-of-use (TOCTOU)  
+**Difficulty:** Practitioner  
+**Status:** Solved  
+**Tools:** Burp Suite Community Edition, browser  
+**Target:** Authorized PortSwigger Web Security Academy lab
+
+## 1. Executive Summary
+
+The application contained a race condition in its coupon redemption workflow. The server was intended to prevent a discount coupon from being applied more than once, but concurrent requests could bypass this restriction.
+
+By sending multiple requests to the coupon endpoint in parallel, several requests returned a successful application response. The resulting cart showed a cumulative discount that substantially reduced the price of an expensive product.
+
+The vulnerability could allow an attacker to exploit a business logic flaw and obtain products for significantly less than their intended price.
+
+## 2. Objective
+
+The objective was to identify and exploit a race condition in the coupon application process, then demonstrate its business impact by purchasing the target product using the account's available store credit.
+
+The lab used the following endpoints:
+
+- `POST /cart` — adds products to the cart.
+- `POST /cart/coupon` — applies a discount coupon.
+- `GET /cart` — displays the cart contents and calculated total.
+
+The coupon used during testing was `PROMO20`.
+
+## 3. Initial Reconnaissance
+
+After logging in and examining the shopping workflow, I identified the coupon application request in Burp Suite.
+
+The relevant request was:
+
+```http
+POST /cart/coupon HTTP/2
+Host: <lab-host>
+Cookie: session=<session-cookie>
+Content-Type: application/x-www-form-urlencoded
+
+csrf=<csrf-token>&coupon=PROMO20
+```
+
+The session cookie and CSRF token were taken from the active browser session. The exact values were not hardcoded into the final write-up because they are session-specific.
+
+### Baseline behaviour
+
+When the coupon was already applied, submitting the request again returned:
+
+```http
+HTTP/2 302 Found
+Location: /cart?couponError=COUPON_ALREADY_APPLIED&coupon=PROMO20
+
+Coupon already applied
+```
+
+After removing the coupon, a single request returned:
+
+```http
+HTTP/2 302 Found
+Location: /cart
+
+Coupon applied
+```
+
+These responses established the expected sequential behaviour: the coupon could be applied once, and subsequent applications were rejected.
+
+## 4. Vulnerability Identification
+
+### 4.1 Establishing the baseline
+
+I sent the coupon request through Burp Repeater and confirmed that the server rejected repeated sequential applications.
+
+This indicated that the application had a duplicate-redemption check, but it did not establish whether that check was safe under concurrent execution.
+
+### 4.2 Sending concurrent requests
+
+I created a group of Repeater tabs containing copies of the coupon request and sent 20 requests in parallel.
+
+The responses were:
+
+| Response | Count |
+|---|---:|
+| `Coupon applied` | 8 |
+| `Coupon already applied` | 12 |
+| **Total requests** | **20** |
+
+Several requests reported successful application even though the application was intended to reject duplicate coupon redemptions.
+
+This behaviour was consistent with a race condition: concurrent requests could reach the relevant application logic before the coupon state had been updated or made visible to the other requests.
+
+## 5. Exploitation and Impact Validation
+
+The initial product was replaced with the **Lightweight "l33t" Leather Jacket**, priced at $1,337.00.
+
+During testing, the cart displayed the following values:
+
+| Item | Amount |
+|---|---:|
+| Product price | $1,337.00 |
+| Accumulated discount | −$1,321.60 |
+| Cart total | $15.40 |
+
+The substantial difference between the original price and the resulting total demonstrated the potential business impact of repeatedly applying the coupon.
+
+I subsequently authenticated as the intended lab user, `wiener`, and verified the store credit of $50.00. The cart state and accumulated discount differed after switching to the authenticated session, highlighting the importance of testing with the correct session and keeping session-specific CSRF tokens consistent.
+
+The laboratory was ultimately marked **Solved** after completing the required exploitation workflow.
+
+## 6. Root Cause Analysis
+
+The observed behaviour is consistent with a non-atomic coupon redemption workflow.
+
+A vulnerable implementation may perform the following operations:
+
+1. Check whether the coupon has already been applied.
+2. Calculate the discount.
+3. Update the cart's coupon state and total.
+
+If concurrent requests can perform the check before the state update becomes effective, multiple requests may pass the validation step.
+
+The exact source code and internal transaction boundaries were not available, so this is a reasoned explanation of the observed behaviour rather than a confirmed description of the application's implementation.
+
+## 7. Security Impact
+
+Potential consequences include:
+
+- **Financial loss:** products may be purchased below their intended price.
+- **Business logic bypass:** the one-time coupon restriction can be circumvented.
+- **Integrity issues:** cart totals and discount state may become inconsistent.
+- **Scalability of exploitation:** automated concurrent requests may increase the likelihood of reproducing the issue.
+
+The practical impact depends on the coupon's value, redemption rules, product prices, and the application's payment and order-validation logic.
+
+## 8. Remediation
+
+The coupon redemption workflow should be designed to prevent concurrent requests from applying the same coupon more than once.
+
+Recommended controls:
+
+1. **Atomic redemption:** combine coupon validation, redemption recording, and cart updates into a single atomic operation where feasible.
+2. **Database transactions and locking:** use appropriate transaction isolation, row-level locking, or equivalent concurrency controls to prevent conflicting redemptions.
+3. **Uniqueness constraints:** enforce one-time redemption rules at the persistence layer, using an appropriate unique key for the user, cart, or coupon according to the business requirement.
+4. **Idempotency:** design repeated requests so they cannot create additional discounts for the same redemption.
+5. **Server-side price validation:** calculate the final payable amount on the server and verify it again during checkout.
+6. **Concurrency testing:** include simultaneous redemption attempts in automated tests, not only sequential requests.
+
+Client-side checks alone are insufficient because an attacker can send concurrent requests directly to the application.
+
+## 9. Verification Criteria
+
+A corrected implementation should satisfy these conditions:
+
+- A single valid coupon request applies the intended discount.
+- Repeated sequential requests do not duplicate the discount.
+- Concurrent requests for the same redemption result in only one effective application.
+- The cart total remains consistent across refreshes and checkout.
+- The final order amount is calculated and validated server-side.
+
+## 10. Conclusion
+
+This lab demonstrated how a race condition can undermine a business logic restriction even when sequential requests appear to be handled correctly.
+
+The key lesson is that checking whether a coupon has already been applied is not enough: the check and the state-changing operation must be coordinated so that concurrent requests cannot both succeed.
+
+**Finding:** Confirmed race condition in coupon redemption.  
+**Result:** Lab solved.  
+**Primary remediation:** Atomic coupon redemption with server-side concurrency controls and checkout validation.
