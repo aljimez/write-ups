@@ -1,0 +1,193 @@
+# Write-up: Server-Side JavaScript Injection
+
+**Plataforma:** PortSwigger Web Security Academy  
+**Categoría:** Server-Side Injection  
+**Vulnerabilidad:** Server-Side JavaScript Injection (SSJS)  
+**Dificultad:** Practitioner  
+**Herramientas:** Burp Suite Community Edition  
+**Estado:** Resuelto
+
+## 1. Resumen ejecutivo
+
+El laboratorio presenta una vulnerabilidad de inyección JavaScript del lado del servidor en el filtro de categorías de una tienda online.
+
+El parámetro `category` se incorpora a una expresión que el servidor interpreta como código JavaScript. Mediante la modificación controlada de este parámetro, fue posible provocar errores de sintaxis, comprobar la evaluación de condiciones booleanas y alterar el comportamiento del filtro.
+
+Finalmente, se introdujo una condición que siempre evalúa como verdadera para modificar los resultados devueltos por la aplicación y visualizar productos que todavía no se habían publicado.
+
+## 2. Objetivo
+
+Identificar y explotar una vulnerabilidad de Server-Side JavaScript Injection para eludir la lógica del filtro de categorías y acceder a productos no publicados.
+
+Los objetivos técnicos fueron:
+
+- Analizar la petición HTTP asociada al filtro.
+- Determinar si el parámetro `category` se interpreta dentro de una expresión JavaScript.
+- Comprobar la evaluación de condiciones verdaderas y falsas.
+- Modificar la lógica del filtro y verificar el acceso a productos no publicados.
+
+## 3. Entorno y herramientas
+
+- **Aplicación:** PortSwigger Web Security Academy.
+- **Herramienta principal:** Burp Suite Community Edition.
+- **Componentes utilizados:** Proxy → HTTP history, Repeater y navegador integrado.
+- **Parámetro analizado:** `category`.
+- **Método HTTP:** GET.
+
+## 4. Metodología y explotación
+
+### 4.1. Captura de la petición original
+
+Se accedió a una categoría de productos desde el navegador de Burp y se localizó la petición correspondiente en **Proxy → HTTP history**.
+
+La petición se envió a Repeater para modificar el parámetro `category` y comparar las respuestas del servidor sin tener que repetir manualmente la navegación.
+
+La respuesta original se utilizó como referencia para identificar cambios en los productos devueltos y en los mensajes de error.
+
+### 4.2. Detección de la inyección
+
+Se sustituyó el valor de `category` por una comilla simple (`'`).
+
+La aplicación devolvió un error de sintaxis JavaScript. Este comportamiento sugirió que el valor proporcionado se incorporaba a una expresión interpretada por el servidor sin un tratamiento adecuado.
+
+A continuación, se probó el valor:
+
+```text
+Gifts'+'
+```
+
+Tras codificarlo para su transmisión mediante URL, la petición dejó de producir el error de sintaxis observado anteriormente.
+
+Esta prueba indicó que era posible modificar la estructura de la expresión y que la entrada probablemente se evaluaba como parte de código JavaScript del lado del servidor.
+
+### 4.3. Verificación mediante condiciones booleanas
+
+Para comprobar si la expresión permitía alterar la lógica del filtro, se realizaron dos pruebas.
+
+**Condición falsa:**
+
+```text
+Gifts' && 0 && 'x
+```
+
+La respuesta no contenía productos.
+
+**Condición verdadera:**
+
+```text
+Gifts' && 1 && 'x
+```
+
+La respuesta contenía los productos de la categoría Gifts.
+
+La diferencia entre ambas respuestas permitió confirmar que la condición introducida influía en el comportamiento de la consulta, proporcionando evidencia más sólida que el error de sintaxis por sí solo.
+
+### 4.4. Alteración del filtro
+
+Tras comprobar el comportamiento booleano, se utilizó la siguiente expresión:
+
+```text
+Gifts'||1||'
+```
+
+El valor se codificó para su envío mediante URL y se transmitió desde Repeater.
+
+La condición `1` es verdadera y los operadores lógicos `||` permiten que la expresión completa sea verdadera con independencia del resultado de la condición original, siempre que la expresión se interprete según la estructura esperada por el laboratorio.
+
+Como resultado, el filtro dejó de limitar los resultados a los productos publicados de la categoría seleccionada y permitió recuperar productos no publicados.
+
+### 4.5. Verificación en el navegador
+
+Se utilizó la opción **Show response in browser** sobre la respuesta de Repeater.
+
+Después se abrió la URL generada en el navegador integrado de Burp para comprobar visualmente los resultados de la aplicación.
+
+La página mostró productos no publicados y el laboratorio confirmó el estado **Solved**.
+
+## 5. Análisis técnico
+
+### Causa raíz
+
+La vulnerabilidad se produce cuando una aplicación incorpora datos controlados por el usuario a una expresión JavaScript que se ejecuta en el servidor, en lugar de tratarlos exclusivamente como datos.
+
+La comilla simple permitió alterar la estructura de la expresión. Posteriormente, los operadores lógicos y los valores booleanos modificaron su evaluación y, con ella, la lógica del filtro.
+
+### Diferencia entre inyección JavaScript del lado del servidor y XSS
+
+Es importante distinguir dos vulnerabilidades:
+
+- **Server-Side JavaScript Injection (SSJS):** el código inyectado se interpreta en el entorno JavaScript del servidor. Dependiendo de ese entorno y de los permisos disponibles, el impacto puede incluir la manipulación de consultas, el acceso a datos o, en determinados casos, la ejecución de operaciones privilegiadas.
+- **Cross-Site Scripting (XSS):** el código JavaScript malicioso se ejecuta en el navegador de la víctima dentro del contexto de una aplicación web.
+
+En este laboratorio, la evidencia principal es la evaluación de la expresión en el servidor y la alteración de los resultados del filtro, no la ejecución de código en el navegador de otra persona.
+
+## 6. Impacto de seguridad
+
+En una aplicación real, una vulnerabilidad de este tipo podría permitir:
+
+- Eludir filtros o restricciones de negocio.
+- Acceder a datos que deberían permanecer ocultos.
+- Modificar consultas o condiciones de búsqueda.
+- Exponer información de productos no publicados.
+- Alcanzar impactos mayores si el entorno JavaScript del servidor ofrece acceso a recursos o funcionalidades sensibles.
+
+La gravedad depende del contexto de ejecución, los datos accesibles y las operaciones que permita realizar el entorno vulnerable.
+
+## 7. Medidas de mitigación
+
+### 7.1. No construir código a partir de entradas del usuario
+
+Evitar concatenar directamente valores controlados por el cliente dentro de expresiones JavaScript que se ejecuten en el servidor.
+
+### 7.2. Tratar las entradas como datos
+
+Utilizar consultas parametrizadas, APIs de consulta seguras o funciones que reciban valores como argumentos, en lugar de construir código dinámicamente.
+
+### 7.3. Validar los valores permitidos
+
+Para un filtro de categorías, comprobar que el valor recibido corresponde a una categoría autorizada y utilizar identificadores internos o listas permitidas.
+
+La validación es una capa adicional de protección, pero no sustituye a la eliminación de la evaluación dinámica de código.
+
+### 7.4. Aplicar controles de acceso en el servidor
+
+La visibilidad de los productos no debe depender exclusivamente de un filtro proporcionado por el cliente. La aplicación debe comprobar en el servidor si cada producto puede mostrarse públicamente.
+
+### 7.5. Reducir la información de error
+
+Evitar que los mensajes de error expongan detalles internos del intérprete, expresiones evaluadas o estructuras de consulta. Registrar los detalles técnicos en sistemas de logging protegidos.
+
+### 7.6. Añadir pruebas de seguridad automatizadas
+
+Incluir pruebas con caracteres especiales, tipos inesperados y condiciones booleanas para detectar evaluaciones inseguras de entradas en las rutas de búsqueda y filtrado.
+
+## 8. Evidencias recomendadas para el portfolio
+
+Se recomienda conservar:
+
+1. Petición original del filtro de categorías.
+2. Respuesta al introducir la comilla simple.
+3. Comparación de las respuestas con las condiciones falsa y verdadera.
+4. Petición final que modifica el filtro.
+5. Captura de los productos no publicados visibles en el navegador.
+6. Confirmación del estado Solved.
+
+Antes de publicar las capturas, elimina cookies de sesión, tokens y otros datos que puedan identificar o autenticar una sesión.
+
+## 9. Conclusión
+
+El laboratorio demuestra que un parámetro aparentemente inocuo puede convertirse en un punto de inyección cuando se incorpora a código JavaScript ejecutado por el servidor.
+
+La combinación de errores de sintaxis, condiciones booleanas y comparación de respuestas permitió identificar y confirmar la vulnerabilidad antes de demostrar su impacto sobre la lógica del filtro.
+
+La lección principal es que **los datos proporcionados por el usuario nunca deben interpretarse como código ejecutable**. Las consultas y reglas de negocio deben implementarse mediante interfaces seguras, y las restricciones de acceso deben verificarse en el servidor.
+
+## 10. Competencias adquiridas
+
+- Análisis de tráfico HTTP mediante Burp Suite.
+- Uso de Repeater para probar entradas controladas.
+- Identificación de indicios de Server-Side JavaScript Injection.
+- Pruebas de comportamiento mediante condiciones booleanas.
+- Interpretación de errores de sintaxis y cambios en las respuestas.
+- Verificación del impacto de una vulnerabilidad en la aplicación.
+- Propuesta de medidas de mitigación para aplicaciones web.
